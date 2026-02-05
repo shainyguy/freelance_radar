@@ -9,12 +9,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Настройки для разных БД
+connect_args = {}
+if "sqlite" in Config.DATABASE_URL:
+    connect_args = {"check_same_thread": False}
+
 # Создаём engine
 engine = create_async_engine(
     Config.DATABASE_URL, 
     echo=False,
-    # Для SQLite нужны особые настройки
-    connect_args={"check_same_thread": False} if "sqlite" in Config.DATABASE_URL else {}
+    pool_pre_ping=True,  # Проверка соединения
 )
 
 async_session = async_sessionmaker(
@@ -29,7 +33,7 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info(f"Database initialized: {Config.DATABASE_URL[:50]}...")
+        logger.info(f"Database initialized successfully")
     except Exception as e:
         logger.error(f"Database init error: {e}")
         raise
@@ -139,6 +143,14 @@ class Database:
             return order
     
     @staticmethod
+    async def get_order_by_id(order_id: int) -> Optional[Order]:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Order).where(Order.id == order_id)
+            )
+            return result.scalar_one_or_none()
+    
+    @staticmethod
     async def get_active_users_for_category(category: str) -> List[User]:
         async with async_session() as session:
             result = await session.execute(
@@ -196,6 +208,6 @@ class Database:
                 )
                 user = user_result.scalar_one_or_none()
                 if user:
-                    user.extend_subscription(Config.SUBSCRIPTION_DAYS)
+                    user.extend_subscription(30)
                 
                 await session.commit()
