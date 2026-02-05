@@ -20,14 +20,17 @@ class Config:
     
     # Subscription
     TRIAL_DAYS = 3
-    SUBSCRIPTION_PRICE = 690  # рублей
+    SUBSCRIPTION_PRICE = 690
     SUBSCRIPTION_DAYS = 30
     
-    # Webhook (для Railway)
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    # Webhook
+    WEBHOOK_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN")  # Railway автоматически даёт
+    if WEBHOOK_URL and not WEBHOOK_URL.startswith("https://"):
+        WEBHOOK_URL = f"https://{WEBHOOK_URL}"
+    
     WEBHOOK_PATH = "/webhook"
     WEBAPP_HOST = "0.0.0.0"
-    WEBAPP_PORT = int(os.getenv("PORT", 8080))
+    WEBAPP_PORT = int(os.getenv("PORT", 8080))  # Railway даёт PORT
     
-    # Parsing interval (seconds)
+    # Parsing
     PARSE_INTERVAL = 60
