@@ -1,4 +1,4 @@
-# bot/main.py (обновлённый)
+# bot/main.py
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
@@ -10,10 +10,8 @@ from aiohttp import web
 from config import Config
 from database.db import init_db
 from services.scheduler import OrderScheduler
-from bot.middlewares.subscription import SubscriptionMiddleware
 
 from bot.handlers import start, categories, subscription, generate_response, profile, orders
-from bot.handlers.payment_webhook import setup_payment_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,14 +20,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============ HEALTHCHECK ============
+async def health_check(request: web.Request) -> web.Response:
+    """Healthcheck endpoint для Railway"""
+    return web.Response(text="OK", status=200)
+
+
 async def on_startup(bot: Bot):
     """Действия при запуске"""
     await init_db()
     logger.info("Database initialized")
     
     if Config.WEBHOOK_URL:
-        await bot.set_webhook(f"{Config.WEBHOOK_URL}{Config.WEBHOOK_PATH}")
-        logger.info(f"Webhook set to {Config.WEBHOOK_URL}{Config.WEBHOOK_PATH}")
+        webhook_url = f"{Config.WEBHOOK_URL}{Config.WEBHOOK_PATH}"
+        await bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
 
 
 async def on_shutdown(bot: Bot):
@@ -47,10 +52,6 @@ def create_bot() -> Bot:
 
 def create_dispatcher() -> Dispatcher:
     dp = Dispatcher()
-    
-    # Регистрируем middleware
-    dp.message.middleware(SubscriptionMiddleware())
-    dp.callback_query.middleware(SubscriptionMiddleware())
     
     # Регистрируем роутеры
     dp.include_router(start.router)
@@ -70,40 +71,48 @@ async def main():
     
     # Инициализация БД
     await init_db()
+    logger.info("Database initialized")
     
-    # Запускаем планировщик мониторинга
-    scheduler = OrderScheduler(bot)
-    scheduler.start()
+    # Регистрируем startup/shutdown
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
     
-    if Config.WEBHOOK_URL:
-        # Webhook режим (для Railway/production)
-        dp.startup.register(on_startup)
-        dp.shutdown.register(on_shutdown)
-        
-        app = web.Application()
-        
-        # Webhook для бота
-        webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-        webhook_handler.register(app, path=Config.WEBHOOK_PATH)
-        
-        # Webhook для ЮKassa
-        setup_payment_routes(app)
-        
-        setup_application(app, dp, bot=bot)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, Config.WEBAPP_HOST, Config.WEBAPP_PORT)
-        await site.start()
-        
-        logger.info(f"Bot started on {Config.WEBAPP_HOST}:{Config.WEBAPP_PORT}")
-        
-        # Держим бота запущенным
-        await asyncio.Event().wait()
-    else:
-        # Polling режим (для локальной разработки)
-        logger.info("Starting bot in polling mode...")
-        await dp.start_polling(bot)
+    # Создаём web приложение
+    app = web.Application()
+    
+    # ============ ДОБАВЛЯЕМ HEALTHCHECK ROUTE ============
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    
+    # Webhook для бота
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path=Config.WEBHOOK_PATH)
+    
+    setup_application(app, dp, bot=bot)
+    
+    # Запускаем сервер
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(
+        runner, 
+        host=Config.WEBAPP_HOST, 
+        port=Config.WEBAPP_PORT
+    )
+    await site.start()
+    
+    logger.info(f"Server started on {Config.WEBAPP_HOST}:{Config.WEBAPP_PORT}")
+    
+    # Запускаем планировщик (опционально, можно отключить на старте)
+    try:
+        scheduler = OrderScheduler(bot)
+        scheduler.start()
+        logger.info("Scheduler started")
+    except Exception as e:
+        logger.error(f"Scheduler error: {e}")
+    
+    # Держим приложение запущенным
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
