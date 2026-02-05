@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 # ===== WEBAPP HTML =====
-WEBAPP_HTML = '''<!DOCTYPE html>
+def get_webapp_html():
+    return '''<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -135,9 +136,6 @@ WEBAPP_HTML = '''<!DOCTYPE html>
             font-size: 14px; font-weight: 500; opacity: 0; transition: all 0.3s; z-index: 1000;
         }
         .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-        
-        .empty-state { text-align: center; padding: 40px; }
-        .empty-icon { font-size: 64px; margin-bottom: 16px; }
     </style>
 </head>
 <body>
@@ -150,15 +148,15 @@ WEBAPP_HTML = '''<!DOCTYPE html>
         
         <div class="stats">
             <div class="stat-card">
-                <div class="stat-value" id="ordersCount">—</div>
+                <div class="stat-value" id="ordersCount">47</div>
                 <div class="stat-label">Заказов</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="responsesCount">—</div>
+                <div class="stat-value" id="responsesCount">12</div>
                 <div class="stat-label">Откликов</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="earnings">—</div>
+                <div class="stat-value" id="earnings">89K</div>
                 <div class="stat-label">Заработано</div>
             </div>
         </div>
@@ -184,7 +182,7 @@ WEBAPP_HTML = '''<!DOCTYPE html>
         
         <div class="section-title">
             <span>🔥 Горячие заказы</span>
-            <span class="badge" id="hotCount">0</span>
+            <span class="badge">3</span>
         </div>
         
         <div id="ordersList"></div>
@@ -197,17 +195,15 @@ WEBAPP_HTML = '''<!DOCTYPE html>
         tg.ready();
         tg.expand();
         
+        // Set theme
+        document.body.style.backgroundColor = tg.backgroundColor || '#0a0a0f';
+        
         document.addEventListener('DOMContentLoaded', () => {
-            loadData();
-            tg.HapticFeedback.impactOccurred('light');
+            loadOrders();
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
         });
         
-        function loadData() {
-            document.getElementById('ordersCount').textContent = '47';
-            document.getElementById('responsesCount').textContent = '12';
-            document.getElementById('earnings').textContent = '89K';
-            document.getElementById('hotCount').textContent = '3';
-            
+        function loadOrders() {
             const orders = [
                 { title: 'Разработка Telegram бота для интернет-магазина', budget: '45 000 ₽', source: 'kwork', hot: true, score: 92 },
                 { title: 'Дизайн лендинга для IT-стартапа', budget: '30 000 ₽', source: 'fl', hot: false, score: 78 },
@@ -232,7 +228,7 @@ WEBAPP_HTML = '''<!DOCTYPE html>
                         <span class="score-value">${o.score}%</span>
                     </div>
                     <div class="order-actions">
-                        <button class="order-btn primary" onclick="generateResponse()">✨ AI-отклик</button>
+                        <button class="order-btn primary" onclick="generateResponse('${o.title}')">✨ AI-отклик</button>
                         <button class="order-btn secondary" onclick="openOrder()">🔗 Открыть</button>
                     </div>
                 </div>
@@ -248,33 +244,29 @@ WEBAPP_HTML = '''<!DOCTYPE html>
             const text = document.getElementById('turboText');
             btn.disabled = true;
             text.textContent = 'СКАНИРУЮ БИРЖИ...';
-            tg.HapticFeedback.impactOccurred('heavy');
-            
-            // Отправляем данные боту
-            tg.sendData(JSON.stringify({ action: 'turbo_parse' }));
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('heavy');
             
             setTimeout(() => {
                 text.textContent = 'НАЙДЕНО 7 ЗАКАЗОВ!';
                 showToast('✅ Найдено 7 новых заказов!');
-                tg.HapticFeedback.notificationOccurred('success');
+                if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
                 setTimeout(() => { text.textContent = 'ТУРБО-ПАРСИНГ'; btn.disabled = false; }, 2000);
             }, 2000);
         }
         
         function togglePredator() {
             const enabled = document.getElementById('predatorMode').checked;
-            tg.HapticFeedback.impactOccurred(enabled ? 'heavy' : 'light');
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred(enabled ? 'heavy' : 'light');
             showToast(enabled ? '🦁 Режим Хищник активирован!' : 'Режим Хищник отключён');
-            tg.sendData(JSON.stringify({ action: 'predator_mode', enabled }));
         }
         
-        function generateResponse() {
-            tg.HapticFeedback.impactOccurred('medium');
-            tg.showAlert('✨ Генерирую AI-отклик...\\n\\nЗдравствуйте! Заинтересовал ваш проект. Имею опыт в данной области — успешно завершил 50+ похожих задач. Готов обсудить детали!');
+        function generateResponse(title) {
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+            tg.showAlert('✨ AI-отклик:\\n\\nЗдравствуйте! Заинтересовал ваш проект. Имею опыт — 50+ задач. Готов обсудить детали!');
         }
         
         function openOrder() {
-            tg.HapticFeedback.impactOccurred('light');
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
             tg.openLink('https://kwork.ru');
         }
         
@@ -290,19 +282,49 @@ WEBAPP_HTML = '''<!DOCTYPE html>
 
 
 # ===== WEB HANDLERS =====
+
+async def handle_index(request):
+    """Root endpoint - health check"""
+    return web.Response(text="Freelance Radar Bot is running!")
+
+
 async def handle_health(request):
+    """Health check endpoint"""
     return web.Response(text="OK")
 
-async def handle_webapp(request):
-    return web.Response(text=WEBAPP_HTML, content_type='text/html', charset='utf-8')
 
-async def handle_api_orders(request):
-    return web.json_response([
-        {'id': 1, 'title': 'Test order', 'budget': '10000', 'source': 'kwork'}
-    ])
+async def handle_webapp(request):
+    """Serve Mini App"""
+    logger.info("Serving webapp...")
+    html = get_webapp_html()
+    return web.Response(
+        text=html,
+        content_type='text/html',
+        charset='utf-8'
+    )
+
+
+# ===== CREATE APP =====
+
+def create_web_app():
+    """Create aiohttp application with routes"""
+    app = web.Application()
+    
+    # ВАЖНО: порядок маршрутов имеет значение!
+    # Сначала более специфичные, потом общие
+    
+    app.router.add_get('/webapp', handle_webapp)
+    app.router.add_get('/webapp/', handle_webapp)
+    app.router.add_get('/health', handle_health)
+    app.router.add_get('/', handle_index)
+    
+    logger.info("Web routes registered: /, /health, /webapp")
+    
+    return app
 
 
 # ===== MAIN =====
+
 async def main():
     # 1. Init database
     await init_db()
@@ -324,53 +346,56 @@ async def main():
     dp.include_router(orders.router)
     
     # 4. Create web app
-    app = web.Application()
-    app.router.add_get('/', handle_health)
-    app.router.add_get('/health', handle_health)
-    app.router.add_get('/webapp', handle_webapp)
-    app.router.add_get('/api/orders', handle_api_orders)
+    app = create_web_app()
     
-    # 5. Setup webhook or polling
+    # 5. Get domain
     domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '')
+    logger.info(f"RAILWAY_PUBLIC_DOMAIN: {domain}")
     
     if domain:
-        # Webhook mode
+        # ===== WEBHOOK MODE =====
         from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
         
         webhook_url = f"https://{domain}/webhook"
+        webapp_url = f"https://{domain}/webapp"
+        
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(webhook_url)
-        logger.info(f"Webhook set: {webhook_url}")
-        logger.info(f"WebApp URL: https://{domain}/webapp")
         
+        logger.info(f"✅ Webhook: {webhook_url}")
+        logger.info(f"✅ WebApp:  {webapp_url}")
+        
+        # Add webhook handler
         webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
         webhook_handler.register(app, path='/webhook')
         setup_application(app, dp, bot=bot)
+        
+        # Start server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT)
+        await site.start()
+        
+        logger.info(f"✅ Server started on port {Config.WEBAPP_PORT}")
+        
+        # Keep running
+        await asyncio.Event().wait()
+        
+    else:
+        # ===== POLLING MODE + WEB SERVER =====
+        logger.info("No domain found, starting in polling mode with web server")
         
         # Start web server
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT)
         await site.start()
+        logger.info(f"✅ Web server on port {Config.WEBAPP_PORT}")
         
-        logger.info(f"Server started on port {Config.WEBAPP_PORT}")
-        
-        # Keep running
-        await asyncio.Event().wait()
-    else:
-        # Polling mode + web server
-        logger.info("No RAILWAY_PUBLIC_DOMAIN, starting polling + web server")
-        
-        # Start web server in background
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT)
-        await site.start()
-        logger.info(f"Web server started on port {Config.WEBAPP_PORT}")
-        
-        # Start polling
+        # Start bot polling
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Starting bot polling...")
+        logger.info("✅ Starting bot polling...")
+        
         await dp.start_polling(bot)
 
 
