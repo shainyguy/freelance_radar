@@ -1,10 +1,13 @@
-# parsers/__init__.py (обновлённый)
+# parsers/__init__.py
 from .base import BaseParser
 from .kwork import KworkParser
 from .fl_ru import FLRuParser
 from .habr_freelance import HabrFreelanceParser
 from .hh_ru import HHParser
-from .telegram_channels import TelegramChannelsParser
+
+# TelegramChannelsParser требует отдельной настройки Telethon
+# Пока отключаем
+# from .telegram_channels import TelegramChannelsParser
 
 ALL_PARSERS = [
     KworkParser(),
@@ -19,6 +22,5 @@ __all__ = [
     'FLRuParser',
     'HabrFreelanceParser',
     'HHParser',
-    'TelegramChannelsParser',
     'ALL_PARSERS'
 ]
