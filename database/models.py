@@ -20,9 +20,17 @@ class User(Base):
     trial_used = Column(Boolean, default=False)
     
     # Настройки
-    categories = Column(JSON, default=list)  # ["design", "python", "copywriting"]
+    categories = Column(JSON, default=list)
     min_budget = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    
+    # 🦁 Режим Хищник - мгновенные пуши для жирных заказов
+    predator_mode = Column(Boolean, default=False)
+    predator_min_budget = Column(Integer, default=50000)  # Минимум для режима Хищник
+    
+    # Статистика
+    total_earnings = Column(Integer, default=0)
+    orders_taken = Column(Integer, default=0)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -104,4 +112,5 @@ class SentOrder(Base):
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
     sent_at = Column(DateTime, default=datetime.utcnow)
     
+
     user = relationship("User", back_populates="sent_orders")
