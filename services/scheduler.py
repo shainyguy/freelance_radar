@@ -1,7 +1,6 @@
 # services/scheduler.py
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from parsers import ALL_PARSERS
 from database.db import Database
 from config import Config
 import logging
@@ -20,6 +19,10 @@ class OrderScheduler:
     
     async def check_new_orders(self):
         """Проверяет новые заказы на всех биржах"""
+        # Импортируем здесь, чтобы избежать circular import
+        from parsers import ALL_PARSERS
+        from bot.keyboards.keyboards import get_order_keyboard
+        
         logger.info("Checking for new orders...")
         
         for parser in ALL_PARSERS:
@@ -42,15 +45,17 @@ class OrderScheduler:
                                         continue
                                 
                                 # Отправляем уведомление
-                                await self.send_order_notification(user, order)
+                                await self._send_order_notification(user, order, get_order_keyboard)
                                 
                 except Exception as e:
                     logger.error(f"Error in scheduler for {parser.SOURCE_NAME}/{category}: {e}")
-    
-    async def send_order_notification(self, user, order):
-        """Отправляет уведомление о новом заказе"""
-        from bot.keyboards.keyboards import get_order_keyboard
         
+        # Закрываем сессии парсеров
+        for parser in ALL_PARSERS:
+            await parser.close()
+    
+    async def _send_order_notification(self, user, order, get_order_keyboard):
+        """Отправляет уведомление о новом заказе"""
         try:
             # Проверяем, не отправляли ли уже
             if await Database.is_order_sent(user.id, order.id):
@@ -65,13 +70,14 @@ class OrderScheduler:
             }
             
             emoji = source_emoji.get(order.source, "📋")
+            desc = order.description[:500] if order.description else ""
             
             text = f"""
 {emoji} <b>Новый заказ на {order.source}</b>
 
 📌 <b>{order.title}</b>
 
-{order.description[:500]}{'...' if len(order.description) > 500 else ''}
+{desc}{'...' if len(order.description or '') > 500 else ''}
 
 💰 Бюджет: {order.budget}
 
@@ -97,7 +103,8 @@ class OrderScheduler:
             self.check_new_orders,
             'interval',
             seconds=Config.PARSE_INTERVAL,
-            id='check_orders'
+            id='check_orders',
+            max_instances=1
         )
         self.scheduler.start()
         logger.info(f"Scheduler started with interval {Config.PARSE_INTERVAL}s")
