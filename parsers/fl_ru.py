@@ -14,76 +14,87 @@ class FLRuParser(BaseParser):
     BASE_URL = "https://www.fl.ru"
     
     CATEGORY_MAP = {
-        "design": "/projects/?kind=5",  # Дизайн
-        "python": "/projects/?kind=1",  # Программирование
-        "copywriting": "/projects/?kind=3",  # Тексты
-        "marketing": "/projects/?kind=4",  # Реклама и маркетинг
+        "design": "/projects/category/dizain/",
+        "python": "/projects/category/programmirovanie/",
+        "copywriting": "/projects/category/teksty/",
+        "marketing": "/projects/category/reklama-i-marketing/",
     }
     
     async def parse_orders(self, category: str) -> List[Dict[str, Any]]:
         orders = []
         
         try:
-            url_path = self.CATEGORY_MAP.get(category, "/projects/")
-            url = f"{self.BASE_URL}{url_path}"
+            path = self.CATEGORY_MAP.get(category, "/projects/")
+            url = f"{self.BASE_URL}{path}"
             
             session = await self.get_session()
-            async with session.get(url) as response:
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            }
+            
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status != 200:
-                    logger.error(f"FL.ru returned {response.status}")
+                    logger.warning(f"FL.ru returned {response.status}")
                     return orders
                 
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
                 # Ищем проекты
-                projects = soup.find_all('div', class_='b-post')
+                projects = soup.select('[id^="project-item"], .b-post, .project-item')[:15]
                 
-                for project in projects[:20]:
+                for project in projects:
                     try:
                         # Заголовок
-                        title_elem = project.find('a', class_='b-post__link')
-                        if not title_elem:
+                        title_el = project.select_one('a.b-post__link, .project-name a, h2 a')
+                        if not title_el:
                             continue
                         
-                        title = title_elem.get_text(strip=True)
-                        url = title_elem.get('href', '')
-                        if not url.startswith('http'):
-                            url = self.BASE_URL + url
+                        title = title_el.get_text(strip=True)
+                        href = title_el.get('href', '')
                         
-                        external_id = re.search(r'/(\d+)', url)
-                        external_id = external_id.group(1) if external_id else url
+                        if not title or len(title) < 5:
+                            continue
+                        
+                        # ID
+                        order_id = re.search(r'/(\d+)', href)
+                        order_id = order_id.group(1) if order_id else href
                         
                         # Описание
-                        desc_elem = project.find('div', class_='b-post__txt')
-                        description = desc_elem.get_text(strip=True) if desc_elem else ""
+                        desc_el = project.select_one('.b-post__body, .project-descr')
+                        description = desc_el.get_text(strip=True)[:500] if desc_el else ""
                         
-                        # Бюджет
-                        price_elem = project.find('div', class_='b-post__price')
-                        budget = price_elem.get_text(strip=True) if price_elem else "Договорная"
+                        # Цена
+                        price_el = project.select_one('.b-post__price, .project-price, [class*="price"]')
+                        budget = price_el.get_text(strip=True) if price_el else "Договорная"
                         
-                        budget_value = 0
-                        if budget:
-                            numbers = re.findall(r'\d+', budget.replace(' ', ''))
-                            if numbers:
-                                budget_value = int(numbers[0])
+                        full_url = href if href.startswith('http') else f"{self.BASE_URL}{href}"
                         
                         orders.append({
-                            'external_id': external_id,
+                            'external_id': order_id,
                             'source': self.SOURCE_NAME,
-                            'title': title,
-                            'description': description[:4000],
+                            'title': title[:200],
+                            'description': description,
                             'budget': budget,
-                            'budget_value': budget_value,
-                            'url': url,
+                            'budget_value': self._extract_price(budget),
+                            'url': full_url,
                             'category': category
                         })
                         
                     except Exception as e:
-                        logger.error(f"Error parsing FL.ru project: {e}")
                         continue
                         
         except Exception as e:
-            logger.error(f"Error parsing FL.ru: {e}")
+            logger.error(f"FL.ru parse error: {e}")
         
+        logger.info(f"FL.ru: found {len(orders)} orders for {category}")
         return orders
+    
+    def _extract_price(self, text: str) -> int:
+        if not text:
+            return 0
+        numbers = re.findall(r'\d+', text.replace(' ', ''))
+        return int(numbers[0]) if numbers else 0
