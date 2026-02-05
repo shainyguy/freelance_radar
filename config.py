@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def get_database_url() -> str:
     """Получает и преобразует DATABASE_URL для asyncpg"""
     url = os.getenv("DATABASE_URL")
@@ -16,7 +17,7 @@ def get_database_url() -> str:
     # Нужно заменить на postgresql+asyncpg://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif url.startswith("postgresql://"):
+    elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
     
     return url
