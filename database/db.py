@@ -5,19 +5,34 @@ from database.models import Base, User, Order, Payment, SentOrder
 from config import Config
 from typing import Optional, List
 from datetime import datetime
+import logging
 
-engine = create_async_engine(Config.DATABASE_URL, echo=False)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+logger = logging.getLogger(__name__)
+
+# Создаём engine
+engine = create_async_engine(
+    Config.DATABASE_URL, 
+    echo=False,
+    # Для SQLite нужны особые настройки
+    connect_args={"check_same_thread": False} if "sqlite" in Config.DATABASE_URL else {}
+)
+
+async_session = async_sessionmaker(
+    engine, 
+    class_=AsyncSession, 
+    expire_on_commit=False
+)
 
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-async def get_session() -> AsyncSession:
-    async with async_session() as session:
-        yield session
+    """Инициализация базы данных"""
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info(f"Database initialized: {Config.DATABASE_URL[:50]}...")
+    except Exception as e:
+        logger.error(f"Database init error: {e}")
+        raise
 
 
 class Database:
@@ -72,6 +87,28 @@ class Database:
                 await session.commit()
     
     @staticmethod
+    async def update_user_min_budget(telegram_id: int, min_budget: int):
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.min_budget = min_budget
+                await session.commit()
+    
+    @staticmethod
+    async def update_user_active(telegram_id: int, is_active: bool):
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.is_active = is_active
+                await session.commit()
+    
+    @staticmethod
     async def extend_user_subscription(telegram_id: int, days: int = 30):
         async with async_session() as session:
             result = await session.execute(
@@ -85,7 +122,6 @@ class Database:
     @staticmethod
     async def save_order(order_data: dict) -> Optional[Order]:
         async with async_session() as session:
-            # Проверяем, нет ли уже такого заказа
             result = await session.execute(
                 select(Order).where(
                     Order.source == order_data['source'],
@@ -112,7 +148,6 @@ class Database:
                 )
             )
             users = result.scalars().all()
-            # Фильтруем по категории
             return [u for u in users if category in (u.categories or [])]
     
     @staticmethod
@@ -155,49 +190,12 @@ class Database:
             if payment:
                 payment.status = "succeeded"
                 payment.confirmed_at = datetime.utcnow()
-                await session.commit()
                 
-                # Продлеваем подписку
                 user_result = await session.execute(
                     select(User).where(User.id == payment.user_id)
                 )
                 user = user_result.scalar_one_or_none()
                 if user:
                     user.extend_subscription(Config.SUBSCRIPTION_DAYS)
-                    await session.commit()
-
-    @staticmethod
-    async def update_user_min_budget(telegram_id: int, min_budget: int):
-        """Обновляет минимальный бюджет пользователя"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == telegram_id)
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                user.min_budget = min_budget
+                
                 await session.commit()
-    
-    @staticmethod
-    async def update_user_active(telegram_id: int, is_active: bool):
-        """Обновляет статус активности уведомлений"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == telegram_id)
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                user.is_active = is_active
-                await session.commit()
-    
-    @staticmethod
-    async def get_all_active_users() -> List[User]:
-        """Получает всех активных пользователей с подпиской"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(
-                    User.is_active == True,
-                    User.subscription_end > datetime.utcnow()
-                )
-            )
-            return result.scalars().all()                
