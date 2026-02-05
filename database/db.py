@@ -211,3 +211,29 @@ class Database:
                     user.extend_subscription(30)
                 
                 await session.commit()
+
+    @staticmethod
+    async def update_predator_mode(telegram_id: int, enabled: bool):
+        """Обновляет режим Хищник"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.predator_mode = enabled
+                await session.commit()
+    
+    @staticmethod
+    async def get_predator_users() -> List[User]:
+        """Получает пользователей с режимом Хищник"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(
+                    User.predator_mode == True,
+                    User.is_active == True,
+                    User.subscription_end > datetime.utcnow()
+                )
+            )
+            return result.scalars().all()
+
