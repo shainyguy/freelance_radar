@@ -1,6 +1,6 @@
 # database/db.py
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, text
 from database.models import Base, User, Order, Payment, SentOrder
 from config import Config
 from typing import Optional, List
@@ -9,16 +9,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Настройки для разных БД
-connect_args = {}
-if "sqlite" in Config.DATABASE_URL:
-    connect_args = {"check_same_thread": False}
-
 # Создаём engine
 engine = create_async_engine(
     Config.DATABASE_URL, 
     echo=False,
-    pool_pre_ping=True,  # Проверка соединения
+    pool_pre_ping=True,
 )
 
 async_session = async_sessionmaker(
@@ -28,12 +23,37 @@ async_session = async_sessionmaker(
 )
 
 
+async def run_migrations():
+    """Добавляет недостающие колонки в существующие таблицы"""
+    migrations = [
+        # Добавляем новые поля в users
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS predator_mode BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS predator_min_budget INTEGER DEFAULT 50000",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_earnings INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS orders_taken INTEGER DEFAULT 0",
+    ]
+    
+    async with engine.begin() as conn:
+        for migration in migrations:
+            try:
+                await conn.execute(text(migration))
+                logger.info(f"Migration applied: {migration[:50]}...")
+            except Exception as e:
+                # Колонка уже существует или другая ошибка
+                logger.debug(f"Migration skipped: {e}")
+
+
 async def init_db():
     """Инициализация базы данных"""
     try:
+        # Создаём таблицы
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info(f"Database initialized successfully")
+        
+        # Запускаем миграции
+        await run_migrations()
+        
+        logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Database init error: {e}")
         raise
@@ -113,6 +133,31 @@ class Database:
                 await session.commit()
     
     @staticmethod
+    async def update_predator_mode(telegram_id: int, enabled: bool):
+        """Обновляет режим Хищник"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.predator_mode = enabled
+                await session.commit()
+    
+    @staticmethod
+    async def get_predator_users() -> List[User]:
+        """Получает пользователей с режимом Хищник"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(User).where(
+                    User.predator_mode == True,
+                    User.is_active == True,
+                    User.subscription_end > datetime.utcnow()
+                )
+            )
+            return result.scalars().all()
+    
+    @staticmethod
     async def extend_user_subscription(telegram_id: int, days: int = 30):
         async with async_session() as session:
             result = await session.execute(
@@ -167,7 +212,10 @@ class Database:
         async with async_session() as session:
             sent = SentOrder(user_id=user_id, order_id=order_id)
             session.add(sent)
-            await session.commit()
+            try:
+                await session.commit()
+            except:
+                await session.rollback()
     
     @staticmethod
     async def is_order_sent(user_id: int, order_id: int) -> bool:
@@ -211,29 +259,3 @@ class Database:
                     user.extend_subscription(30)
                 
                 await session.commit()
-
-    @staticmethod
-    async def update_predator_mode(telegram_id: int, enabled: bool):
-        """Обновляет режим Хищник"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == telegram_id)
-            )
-            user = result.scalar_one_or_none()
-            if user:
-                user.predator_mode = enabled
-                await session.commit()
-    
-    @staticmethod
-    async def get_predator_users() -> List[User]:
-        """Получает пользователей с режимом Хищник"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(User).where(
-                    User.predator_mode == True,
-                    User.is_active == True,
-                    User.subscription_end > datetime.utcnow()
-                )
-            )
-            return result.scalars().all()
-
