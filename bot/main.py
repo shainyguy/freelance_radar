@@ -692,16 +692,19 @@ async def main():
     app = create_web_app()
     
     domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '')
-    logger.info(f"Domain: {{domain}}")
+    logger.info(f"Domain: {domain}")
     
     if domain:
         from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
         
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(f"https://{{domain}}/webhook")
+        webhook_url = f"https://{domain}/webhook"
+        webapp_url = f"https://{domain}/webapp"
         
-        logger.info(f"Webhook: https://{{domain}}/webhook")
-        logger.info(f"WebApp: https://{{domain}}/webapp")
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(webhook_url)
+        
+        logger.info(f"Webhook: {webhook_url}")
+        logger.info(f"WebApp: {webapp_url}")
         
         webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
         webhook_handler.register(app, path='/webhook')
@@ -712,9 +715,10 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT)
         await site.start()
         
-        logger.info(f"Server on port {{Config.WEBAPP_PORT}}")
+        logger.info(f"Server on port {Config.WEBAPP_PORT}")
         await asyncio.Event().wait()
     else:
+        logger.info("No domain, starting polling mode")
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT)
@@ -726,3 +730,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
