@@ -4,16 +4,14 @@ from .kwork import KworkParser
 from .fl_ru import FLRuParser
 from .habr_freelance import HabrFreelanceParser
 from .hh_ru import HHParser
-
-# TelegramChannelsParser требует отдельной настройки Telethon
-# Пока отключаем
-# from .telegram_channels import TelegramChannelsParser
+from .freelanceru import FreelanceRuParser
 
 ALL_PARSERS = [
-    KworkParser(),
-    FLRuParser(),
-    HabrFreelanceParser(),
-    HHParser(),
+    HHParser(),          # Работает стабильно (API)
+    KworkParser(),       # Kwork
+    FLRuParser(),        # FL.ru
+    FreelanceRuParser(), # Freelance.ru
+    # HabrFreelanceParser(),  # Закрыт
 ]
 
 __all__ = [
@@ -22,5 +20,6 @@ __all__ = [
     'FLRuParser',
     'HabrFreelanceParser',
     'HHParser',
+    'FreelanceRuParser',
     'ALL_PARSERS'
 ]
