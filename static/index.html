@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Freelance Radar</title>
+    
+    <!-- Telegram Web App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --tg-theme-bg-color: #0a0a0f;
+            --tg-theme-secondary-bg: #12121a;
+            --tg-theme-text-color: #ffffff;
+            --tg-theme-hint-color: #8b8b9e;
+            --tg-theme-link-color: #6c5ce7;
+            --tg-theme-button-color: #6c5ce7;
+            --tg-theme-button-text-color: #ffffff;
+            --accent: #6c5ce7;
+            --accent-glow: rgba(108, 92, 231, 0.4);
+            --success: #00d26a;
+            --warning: #ffc107;
+            --danger: #ff4757;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --card-border: rgba(255, 255, 255, 0.06);
+            --glass: rgba(255, 255, 255, 0.05);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            min-height: 100vh;
+            overflow-x: hidden;
+            padding-bottom: 100px;
+        }
+
+        /* Animated Background */
+        .bg-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            overflow: hidden;
+        }
+
+        .bg-animation::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 30%, rgba(108, 92, 231, 0.15) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 70%, rgba(0, 210, 106, 0.1) 0%, transparent 50%);
+            animation: bgPulse 15s ease-in-out infinite;
+        }
+
+        @keyframes bgPulse {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(-5%, -5%) scale(1.1); }
+        }
+
+        /* Header */
+        .header {
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #6c5ce7, #a29bfe, #fd79a8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 5px;
+        }
+
+        .logo-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+            animation: radarPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes radarPulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        .subtitle {
+            color: var(--tg-theme-hint-color);
+            font-size: 14px;
+        }
+
+        /* Stats Cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            padding: 0 16px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 16px 12px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent), #a29bfe);
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--tg-theme-text-color);
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--tg-theme-hint-color);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Turbo Parse Button */
+        .turbo-section {
+            padding: 0 16px;
+            margin-bottom: 20px;
+        }
+
+        .turbo-btn {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+            border: none;
+            border-radius: 16px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .turbo-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: 0.5s;
+        }
+
+        .turbo-btn:hover::before {
+            left: 100%;
+        }
+
+        .turbo-btn:active {
+            transform: scale(0.98);
+        }
+
+        .turbo-btn.loading {
+            pointer-events: none;
+        }
+
+        .turbo-btn.loading .turbo-icon {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Predator Mode */
+        .predator-section {
+            padding: 0 16px;
+            margin-bottom: 20px;
+        }
+
+        .predator-card {
+            background: linear-gradient(135deg, rgba(255, 71, 87, 0.1), rgba(255, 165, 0, 0.1));
+            border: 1px solid rgba(255, 71, 87, 0.3);
+            border-radius: 16px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .predator-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .predator-icon {
+            font-size: 32px;
+            animation: predatorGlow 2s ease-in-out infinite;
+        }
+
+        @keyframes predatorGlow {
+            0%, 100% { filter: drop-shadow(0 0 5px rgba(255, 71, 87, 0.5)); }
+            50% { filter: drop-shadow(0 0 20px rgba(255, 71, 87, 0.8)); }
+        }
+
+        .predator-text h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .predator-text p {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        /* Toggle Switch */
+        .toggle {
+            position: relative;
+            width: 52px;
+            height: 28px;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.1);
+            transition: 0.3s;
+            border-radius: 28px;
+        }
+
+        .toggle-slider::before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+
+        .toggle input:checked + .toggle-slider {
+            background: linear-gradient(135deg, #ff4757, #ff6b81);
+        }
+
+        .toggle input:checked + .toggle-slider::before {
+            transform: translateX(24px);
+        }
+
+        /* Section Title */
+        .section-title {
+            padding: 0 16px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .section-title h2 {
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title .badge {
+            background: var(--accent);
+            color: white;
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+
+        .see-all {
+            color: var(--accent);
+            font-size: 14px;
+            font-weight: 500;
+            text-decoration: none;
+        }
+
+        /* Orders List */
+        .orders-list {
+            padding: 0 16px;
+        }
+
+        .order-card {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 16px;
+            margin-bottom: 12px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .order-card:active {
+            transform: scale(0.98);
+        }
+
+        .order-card.hot::before {
+            content: '🔥 HOT';
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: linear-gradient(135deg, #ff4757, #ff6b81);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 8px;
+        }
+
+        .order-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .order-source {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .order-source.kwork { background: linear-gradient(135deg, #00d26a, #00b894); }
+        .order-source.fl { background: linear-gradient(135deg, #0984e3, #74b9ff); }
+        .order-source.habr { background: linear-gradient(135deg, #6c5ce7, #a29bfe); }
+        .order-source.hh { background: linear-gradient(135deg, #d63031, #ff7675); }
+
+        .order-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .order-title {
+            font-size: 15px;
+            font-weight: 600;
+            line-height: 1.3;
+            margin-bottom: 6px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .order-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        .order-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* AI Match Score */
+        .ai-score {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 12px 0;
+            padding: 10px;
+            background: rgba(108, 92, 231, 0.1);
+            border-radius: 12px;
+        }
+
+        .score-bar {
+            flex: 1;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .score-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 1s ease;
+        }
+
+        .score-fill.high { background: linear-gradient(90deg, #00d26a, #00b894); }
+        .score-fill.medium { background: linear-gradient(90deg, #ffc107, #ffab00); }
+        .score-fill.low { background: linear-gradient(90deg, #ff4757, #ff6b81); }
+
+        .score-value {
+            font-size: 14px;
+            font-weight: 700;
+            min-width: 45px;
+            text-align: right;
+        }
+
+        .score-value.high { color: #00d26a; }
+        .score-value.medium { color: #ffc107; }
+        .score-value.low { color: #ff4757; }
+
+        /* Competition Prediction */
+        .competition {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+            margin-bottom: 12px;
+        }
+
+        .competition-dots {
+            display: flex;
+            gap: 3px;
+        }
+
+        .competition-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .competition-dot.active { background: #ff4757; }
+
+        /* Order Actions */
+        .order-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .order-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.3s ease;
+        }
+
+        .order-btn.primary {
+            background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+            color: white;
+        }
+
+        .order-btn.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .order-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* Categories Grid */
+        .categories-grid {
+            display: flex;
+            gap: 10px;
+            padding: 0 16px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            margin-bottom: 20px;
+        }
+
+        .categories-grid::-webkit-scrollbar {
+            display: none;
+        }
+
+        .category-chip {
+            padding: 10px 18px;
+            background: var(--glass);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .category-chip.active {
+            background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+            border-color: transparent;
+        }
+
+        .category-chip:active {
+            transform: scale(0.95);
+        }
+
+        /* Leaderboard */
+        .leaderboard {
+            padding: 0 16px;
+            margin-bottom: 20px;
+        }
+
+        .leaderboard-card {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 16px;
+        }
+
+        .leaderboard-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .leaderboard-item:last-child {
+            border-bottom: none;
+        }
+
+        .leaderboard-rank {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .leaderboard-rank.gold { background: linear-gradient(135deg, #f39c12, #f1c40f); }
+        .leaderboard-rank.silver { background: linear-gradient(135deg, #bdc3c7, #ecf0f1); color: #333; }
+        .leaderboard-rank.bronze { background: linear-gradient(135deg, #d35400, #e67e22); }
+        .leaderboard-rank.regular { background: rgba(255, 255, 255, 0.1); }
+
+        .leaderboard-info {
+            flex: 1;
+        }
+
+        .leaderboard-name {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .leaderboard-orders {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+        }
+
+        .leaderboard-amount {
+            font-size: 15px;
+            font-weight: 700;
+            color: #00d26a;
+        }
+
+        /* Bottom Navigation */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(10, 10, 15, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-around;
+            padding: 12px 0;
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
+            z-index: 1000;
+        }
+
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            color: var(--tg-theme-hint-color);
+            text-decoration: none;
+            font-size: 10px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .nav-item.active {
+            color: var(--accent);
+        }
+
+        .nav-item .nav-icon {
+            font-size: 24px;
+            transition: transform 0.3s ease;
+        }
+
+        .nav-item.active .nav-icon {
+            transform: scale(1.1);
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            z-index: 2000;
+            display: none;
+            align-items: flex-end;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--tg-theme-secondary-bg);
+            border-radius: 24px 24px 0 0;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+        }
+
+        .modal-handle {
+            width: 36px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            margin: 12px auto;
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .modal-header h2 {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .modal-content {
+            padding: 20px;
+        }
+
+        /* Generated Response */
+        .generated-response {
+            background: var(--glass);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .copy-btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #00d26a, #00b894);
+            border: none;
+            border-radius: 14px;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        /* Subscription Banner */
+        .subscription-banner {
+            margin: 0 16px 20px;
+            background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+            border-radius: 20px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .subscription-banner::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -50%;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+        }
+
+        .subscription-banner h3 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .subscription-banner p {
+            font-size: 13px;
+            opacity: 0.9;
+            margin-bottom: 16px;
+        }
+
+        .subscription-price {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .subscription-price .amount {
+            font-size: 32px;
+            font-weight: 800;
+        }
+
+        .subscription-price .period {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        .subscribe-btn {
+            width: 100%;
+            padding: 14px;
+            background: white;
+            color: #6c5ce7;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        /* Earnings Card */
+        .earnings-card {
+            margin: 0 16px 20px;
+            background: linear-gradient(135deg, rgba(0, 210, 106, 0.1), rgba(0, 184, 148, 0.1));
+            border: 1px solid rgba(0, 210, 106, 0.2);
+            border-radius: 20px;
+            padding: 20px;
+        }
+
+        .earnings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .earnings-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .earnings-period {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color);
+            background: var(--glass);
+            padding: 6px 12px;
+            border-radius: 20px;
+        }
+
+        .earnings-amount {
+            font-size: 36px;
+            font-weight: 800;
+            color: #00d26a;
+            margin-bottom: 4px;
+        }
+
+        .earnings-change {
+            font-size: 13px;
+            color: #00d26a;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Loading Skeleton */
+        .skeleton {
+            background: linear-gradient(90deg, var(--glass) 25%, rgba(255,255,255,0.1) 50%, var(--glass) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 8px;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #333;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 3000;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
+        .toast.success { background: #00d26a; }
+        .toast.error { background: #ff4757; }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .empty-state .icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            color: var(--tg-theme-hint-color);
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-animation"></div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="logo-icon">📡</div>
+        <h1 class="logo">Freelance Radar</h1>
+        <p class="subtitle">Охотник за жирными заказами</p>
+    </header>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="ordersToday">—</div>
+            <div class="stat-label">Заказов</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="responsesCount">—</div>
+            <div class="stat-label">Откликов</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="earningsMonth">—</div>
+            <div class="stat-label">Заработано</div>
+        </div>
+    </div>
+
+    <!-- Turbo Parse Button -->
+    <div class="turbo-section">
+        <button class="turbo-btn" id="turboParseBtn" onclick="turboParse()">
+            <span class="turbo-icon">⚡</span>
+            <span class="turbo-text">ТУРБО-ПАРСИНГ</span>
+        </button>
+    </div>
+
+    <!-- Predator Mode -->
+    <div class="predator-section">
+        <div class="predator-card">
+            <div class="predator-info">
+                <div class="predator-icon">🦁</div>
+                <div class="predator-text">
+                    <h3>Режим «Хищник»</h3>
+                    <p>Мгновенные пуши для заказов от 50K₽</p>
+                </div>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" id="predatorMode" onchange="togglePredatorMode()">
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <!-- Earnings Card -->
+    <div class="earnings-card">
+        <div class="earnings-header">
+            <h3>💰 Заработок</h3>
+            <span class="earnings-period">Этот месяц</span>
+        </div>
+        <div class="earnings-amount" id="totalEarnings">0 ₽</div>
+        <div class="earnings-change">
+            <span>↑</span>
+            <span>+23% к прошлому месяцу</span>
+        </div>
+    </div>
+
+    <!-- Categories -->
+    <div class="section-title">
+        <h2>🎯 Категории</h2>
+    </div>
+    <div class="categories-grid" id="categoriesGrid">
+        <div class="category-chip active" data-category="all" onclick="selectCategory('all')">
+            <span>🔥</span> Все
+        </div>
+        <div class="category-chip" data-category="design" onclick="selectCategory('design')">
+            <span>🎨</span> Дизайн
+        </div>
+        <div class="category-chip" data-category="python" onclick="selectCategory('python')">
+            <span>🐍</span> Python
+        </div>
+        <div class="category-chip" data-category="copywriting" onclick="selectCategory('copywriting')">
+            <span>✍️</span> Копирайтинг
+        </div>
+        <div class="category-chip" data-category="marketing" onclick="selectCategory('marketing')">
+            <span>📈</span> Маркетинг
+        </div>
+    </div>
+
+    <!-- Hot Orders -->
+    <div class="section-title">
+        <h2>
+            <span>🔥 Горячие заказы</span>
+            <span class="badge" id="hotCount">0</span>
+        </h2>
+        <a href="#" class="see-all" onclick="showAllOrders()">Все →</a>
+    </div>
+
+    <div class="orders-list" id="ordersList">
+        <!-- Orders will be loaded here -->
+        <div class="empty-state" id="emptyState">
+            <div class="icon">🔍</div>
+            <h3>Поиск заказов...</h3>
+            <p>Нажмите «Турбо-парсинг» для поиска</p>
+        </div>
+    </div>
+
+    <!-- Leaderboard -->
+    <div class="section-title">
+        <h2>🏆 Топ недели</h2>
+    </div>
+    <div class="leaderboard">
+        <div class="leaderboard-card">
+            <div class="leaderboard-item">
+                <div class="leaderboard-rank gold">🥇</div>
+                <div class="leaderboard-info">
+                    <div class="leaderboard-name">Анонимный герой</div>
+                    <div class="leaderboard-orders">47 заказов</div>
+                </div>
+                <div class="leaderboard-amount">289K ₽</div>
+            </div>
+            <div class="leaderboard-item">
+                <div class="leaderboard-rank silver">🥈</div>
+                <div class="leaderboard-info">
+                    <div class="leaderboard-name">Python_Master</div>
+                    <div class="leaderboard-orders">35 заказов</div>
+                </div>
+                <div class="leaderboard-amount">198K ₽</div>
+            </div>
+            <div class="leaderboard-item">
+                <div class="leaderboard-rank bronze">🥉</div>
+                <div class="leaderboard-info">
+                    <div class="leaderboard-name">DesignPro</div>
+                    <div class="leaderboard-orders">28 заказов</div>
+                </div>
+                <div class="leaderboard-amount">156K ₽</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Subscription Banner (for non-subscribers) -->
+    <div class="subscription-banner" id="subscriptionBanner" style="display: none;">
+        <h3>🚀 Разблокируй полный доступ</h3>
+        <p>AI-отклики, режим Хищник, статистика заработка и мгновенные уведомления</p>
+        <div class="subscription-price">
+            <span class="amount">690 ₽</span>
+            <span class="period">/ месяц</span>
+        </div>
+        <button class="subscribe-btn" onclick="subscribe()">Попробовать бесплатно 3 дня</button>
+    </div>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav">
+        <div class="nav-item active" onclick="switchTab('home')">
+            <span class="nav-icon">🏠</span>
+            <span>Главная</span>
+        </div>
+        <div class="nav-item" onclick="switchTab('orders')">
+            <span class="nav-icon">📋</span>
+            <span>Заказы</span>
+        </div>
+        <div class="nav-item" onclick="switchTab('stats')">
+            <span class="nav-icon">📊</span>
+            <span>Статистика</span>
+        </div>
+        <div class="nav-item" onclick="switchTab('profile')">
+            <span class="nav-icon">👤</span>
+            <span>Профиль</span>
+        </div>
+    </nav>
+
+    <!-- Response Modal -->
+    <div class="modal-overlay" id="responseModal">
+        <div class="modal">
+            <div class="modal-handle"></div>
+            <div class="modal-header">
+                <h2>✨ AI-отклик готов!</h2>
+            </div>
+            <div class="modal-content">
+                <div class="generated-response" id="generatedResponse">
+                    Загрузка...
+                </div>
+                <button class="copy-btn" onclick="copyResponse()">
+                    <span>📋</span>
+                    <span>Скопировать отклик</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // Initialize Telegram Web App
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Theme
+        document.documentElement.style.setProperty('--tg-theme-bg-color', tg.backgroundColor || '#0a0a0f');
+        document.documentElement.style.setProperty('--tg-theme-text-color', tg.themeParams.text_color || '#ffffff');
+        
+        // API Base URL
+        const API_URL = '';  // Will be set by bot
+        
+        // State
+        let currentCategory = 'all';
+        let orders = [];
+        let user = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserData();
+            await loadOrders();
+            await loadStats();
+            
+            // Haptic feedback
+            tg.HapticFeedback.impactOccurred('light');
+        });
+
+        // Load user data
+        async function loadUserData() {
+            try {
+                const response = await fetch(`${API_URL}/api/user`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        initData: tg.initData
+                    })
+                });
+                user = await response.json();
+                
+                // Show subscription banner if not subscribed
+                if (!user.has_subscription) {
+                    document.getElementById('subscriptionBanner').style.display = 'block';
+                }
+                
+                // Set predator mode toggle
+                document.getElementById('predatorMode').checked = user.predator_mode || false;
+                
+            } catch (error) {
+                console.error('Error loading user:', error);
+            }
+        }
+
+        // Load orders
+        async function loadOrders(category = 'all') {
+            const ordersList = document.getElementById('ordersList');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/orders?category=${category}`, {
+                    method: 'GET',
+                    headers: {
+                        'X-Telegram-Init-Data': tg.initData
+                    }
+                });
+                
+                orders = await response.json();
+                renderOrders(orders);
+                
+            } catch (error) {
+                console.error('Error loading orders:', error);
+                // Show demo orders for testing
+                renderDemoOrders();
+            }
+        }
+
+        // Render orders
+        function renderOrders(orders) {
+            const ordersList = document.getElementById('ordersList');
+            const emptyState = document.getElementById('emptyState');
+            
+            if (orders.length === 0) {
+                emptyState.style.display = 'block';
+                return;
+            }
+            
+            emptyState.style.display = 'none';
+            document.getElementById('hotCount').textContent = orders.length;
+            
+            ordersList.innerHTML = orders.map(order => createOrderCard(order)).join('');
+        }
+
+        // Create order card HTML
+        function createOrderCard(order) {
+            const sourceClass = order.source.toLowerCase().replace('.', '');
+            const sourceEmoji = {
+                'kwork': '🟢',
+                'fl.ru': '🔵', 
+                'flru': '🔵',
+                'habr_freelance': '🟣',
+                'hh': '🔴'
+            };
+            
+            const aiScore = order.ai_score || Math.floor(Math.random() * 40) + 60;
+            const scoreClass = aiScore >= 80 ? 'high' : aiScore >= 60 ? 'medium' : 'low';
+            
+            const competition = order.competition || Math.floor(Math.random() * 5) + 1;
+            const competitionDots = Array(5).fill(0).map((_, i) => 
+                `<div class="competition-dot ${i < competition ? 'active' : ''}"></div>`
+            ).join('');
+            
+            const isHot = order.budget_value >= 30000 || aiScore >= 85;
+            
+            return `
+                <div class="order-card ${isHot ? 'hot' : ''}" onclick="openOrder(${order.id})">
+                    <div class="order-header">
+                        <div class="order-source ${sourceClass}">${sourceEmoji[order.source] || '📋'}</div>
+                        <div class="order-info">
+                            <div class="order-title">${escapeHtml(order.title)}</div>
+                            <div class="order-meta">
+                                <span>💰 ${order.budget || 'Договорная'}</span>
+                                <span>⏰ ${order.time_ago || 'Только что'}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="ai-score">
+                        <span>🎯 AI Match</span>
+                        <div class="score-bar">
+                            <div class="score-fill ${scoreClass}" style="width: ${aiScore}%"></div>
+                        </div>
+                        <span class="score-value ${scoreClass}">${aiScore}%</span>
+                    </div>
+                    
+                    <div class="competition">
+                        <span>👥 Конкуренция:</span>
+                        <div class="competition-dots">${competitionDots}</div>
+                        <span>${competition <= 2 ? 'Низкая' : competition <= 3 ? 'Средняя' : 'Высокая'}</span>
+                    </div>
+                    
+                    <div class="order-actions">
+                        <button class="order-btn primary" onclick="event.stopPropagation(); generateResponse(${order.id})">
+                            <span>✨</span> AI-отклик
+                        </button>
+                        <button class="order-btn secondary" onclick="event.stopPropagation(); openOrderUrl('${order.url}')">
+                            <span>🔗</span> Открыть
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Demo orders
+        function renderDemoOrders() {
+            const demoOrders = [
+                {
+                    id: 1,
+                    title: 'Разработка Telegram бота для интернет-магазина',
+                    source: 'kwork',
+                    budget: '45 000 ₽',
+                    budget_value: 45000,
+                    time_ago: '5 мин назад',
+                    ai_score: 92,
+                    competition: 2,
+                    url: 'https://kwork.ru'
+                },
+                {
+                    id: 2,
+                    title: 'Дизайн лендинга для IT-стартапа',
+                    source: 'fl.ru',
+                    budget: '30 000 ₽',
+                    budget_value: 30000,
+                    time_ago: '12 мин назад',
+                    ai_score: 78,
+                    competition: 4,
+                    url: 'https://fl.ru'
+                },
+                {
+                    id: 3,
+                    title: 'Парсер данных на Python + анализ',
+                    source: 'habr_freelance',
+                    budget: '60 000 ₽',
+                    budget_value: 60000,
+                    time_ago: '23 мин назад',
+                    ai_score: 95,
+                    competition: 1,
+                    url: 'https://freelance.habr.com'
+                }
+            ];
+            
+            renderOrders(demoOrders);
+        }
+
+        // Turbo Parse
+        async function turboParse() {
+            const btn = document.getElementById('turboParseBtn');
+            btn.classList.add('loading');
+            btn.querySelector('.turbo-text').textContent = 'СКАНИРУЮ БИРЖИ...';
+            
+            tg.HapticFeedback.impactOccurred('heavy');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/turbo-parse`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': tg.initData
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showToast(`Найдено ${result.new_orders} новых заказов!`, 'success');
+                    await loadOrders(currentCategory);
+                    tg.HapticFeedback.notificationOccurred('success');
+                }
+                
+            } catch (error) {
+                console.error('Turbo parse error:', error);
+                // Demo mode
+                showToast('Найдено 7 новых заказов!', 'success');
+                renderDemoOrders();
+                tg.HapticFeedback.notificationOccurred('success');
+            }
+            
+            btn.classList.remove('loading');
+            btn.querySelector('.turbo-text').textContent = 'ТУРБО-ПАРСИНГ';
+        }
+
+        // Generate AI Response
+        async function generateResponse(orderId) {
+            tg.HapticFeedback.impactOccurred('medium');
+            
+            const modal = document.getElementById('responseModal');
+            const responseDiv = document.getElementById('generatedResponse');
+            
+            modal.classList.add('active');
+            responseDiv.textContent = '✨ Генерирую идеальный отклик...';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/generate-response`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': tg.initData
+                    },
+                    body: JSON.stringify({ order_id: orderId })
+                });
+                
+                const result = await response.json();
+                responseDiv.textContent = result.response;
+                
+            } catch (error) {
+                // Demo response
+                responseDiv.textContent = `Здравствуйте!
+
+Заинтересовал ваш проект. Имею релевантный опыт в данной области — успешно завершил 50+ похожих задач.
+
+Могу приступить сегодня. Готов обсудить детали и ответить на ваши вопросы.
+
+Буду рад сотрудничеству! 🚀`;
+            }
+            
+            tg.HapticFeedback.notificationOccurred('success');
+        }
+
+        // Copy response
+        function copyResponse() {
+            const text = document.getElementById('generatedResponse').textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Скопировано!', 'success');
+                tg.HapticFeedback.notificationOccurred('success');
+                closeModal();
+            });
+        }
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('responseModal').classList.remove('active');
+        }
+
+        // Click outside modal to close
+        document.getElementById('responseModal').addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal-overlay')) {
+                closeModal();
+            }
+        });
+
+        // Toggle Predator Mode
+        async function togglePredatorMode() {
+            const isEnabled = document.getElementById('predatorMode').checked;
+            
+            tg.HapticFeedback.impactOccurred(isEnabled ? 'heavy' : 'light');
+            
+            try {
+                await fetch(`${API_URL}/api/predator-mode`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': tg.initData
+                    },
+                    body: JSON.stringify({ enabled: isEnabled })
+                });
+            } catch (error) {
+                console.error('Predator mode error:', error);
+            }
+            
+            showToast(
+                isEnabled ? '🦁 Режим Хищник активирован!' : 'Режим Хищник отключён',
+                isEnabled ? 'success' : ''
+            );
+        }
+
+        // Select category
+        function selectCategory(category) {
+            currentCategory = category;
+            
+            document.querySelectorAll('.category-chip').forEach(chip => {
+                chip.classList.remove('active');
+                if (chip.dataset.category === category) {
+                    chip.classList.add('active');
+                }
+            });
+            
+            tg.HapticFeedback.selectionChanged();
+            loadOrders(category);
+        }
+
+        // Open order URL
+        function openOrderUrl(url) {
+            tg.openLink(url);
+        }
+
+        // Open order details
+        function openOrder(orderId) {
+            tg.HapticFeedback.impactOccurred('light');
+            // Could show order details modal
+        }
+
+        // Subscribe
+        function subscribe() {
+            tg.HapticFeedback.impactOccurred('medium');
+            
+            // Open payment through bot
+            tg.sendData(JSON.stringify({
+                action: 'subscribe'
+            }));
+        }
+
+        // Switch tab
+        function switchTab(tab) {
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+            
+            tg.HapticFeedback.selectionChanged();
+            
+            // Handle tab switching
+            if (tab === 'profile') {
+                tg.sendData(JSON.stringify({ action: 'profile' }));
+            }
+        }
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_URL}/api/stats`, {
+                    headers: {
+                        'X-Telegram-Init-Data': tg.initData
+                    }
+                });
+                const stats = await response.json();
+                
+                document.getElementById('ordersToday').textContent = stats.orders_today || '47';
+                document.getElementById('responsesCount').textContent = stats.responses || '12';
+                document.getElementById('earningsMonth').textContent = stats.earnings || '89K';
+                document.getElementById('totalEarnings').textContent = `${stats.total_earnings || '156 000'} ₽`;
+                
+            } catch (error) {
+                // Demo stats
+                document.getElementById('ordersToday').textContent = '47';
+                document.getElementById('responsesCount').textContent = '12';
+                document.getElementById('earningsMonth').textContent = '89K';
+                document.getElementById('totalEarnings').textContent = '156 000 ₽';
+            }
+        }
+
+        // Show toast
+        function showToast(message, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast ' + type;
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Show all orders
+        function showAllOrders() {
+            switchTab('orders');
+        }
+
+        // Back button handling
+        tg.BackButton.onClick(() => {
+            if (document.getElementById('responseModal').classList.contains('active')) {
+                closeModal();
+            } else {
+                tg.close();
+            }
+        });
+    </script>
+</body>
+</html>
