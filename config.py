@@ -15,22 +15,19 @@ class Config:
     YUKASSA_SHOP_ID = os.getenv("YUKASSA_SHOP_ID")
     YUKASSA_SECRET_KEY = os.getenv("YUKASSA_SECRET_KEY")
     
-    # Database
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./freelance_radar.db")
+    # Database - SQLite для простоты
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data.db")
     
     # Subscription
     TRIAL_DAYS = 3
     SUBSCRIPTION_PRICE = 690
     SUBSCRIPTION_DAYS = 30
     
-    # Webhook
-    WEBHOOK_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN")  # Railway автоматически даёт
-    if WEBHOOK_URL and not WEBHOOK_URL.startswith("https://"):
-        WEBHOOK_URL = f"https://{WEBHOOK_URL}"
-    
+    # Webhook (опционально)
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Оставь пустым для polling
     WEBHOOK_PATH = "/webhook"
     WEBAPP_HOST = "0.0.0.0"
-    WEBAPP_PORT = int(os.getenv("PORT", 8080))  # Railway даёт PORT
+    WEBAPP_PORT = int(os.getenv("PORT", 8080))
     
     # Parsing
     PARSE_INTERVAL = 60
