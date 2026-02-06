@@ -29,7 +29,7 @@ class Config:
     
     DATABASE_URL = get_database_url()
     
-    TRIAL_DAYS = 3
+    TRIAL_DAYS = 1
     BASIC_PRICE = 690
     BASIC_DAYS = 30
     PRO_PRICE = 1490
@@ -42,3 +42,4 @@ class Config:
     @classmethod
     def is_admin(cls, telegram_id: int) -> bool:
         return telegram_id in cls.ADMIN_IDS
+
