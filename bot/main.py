@@ -946,7 +946,7 @@ WEBAPP_HTML = '''<!DOCTYPE html>
     
     <script>
         const API = '{{API_BASE}}';
-        const tg = window.Telegram.WebApp;
+        const tg = Telegram.WebApp.openLink(payment_url);
         
         let user = null;
         let orders = [];
@@ -1235,4 +1235,5 @@ WEBAPP_HTML = '''<!DOCTYPE html>
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
