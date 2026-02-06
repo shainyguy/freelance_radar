@@ -20,6 +20,9 @@ class Config:
     # Telegram
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     
+    # Админы (через запятую в env: ADMIN_IDS=123456,789012)
+    ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
+    
     # GigaChat
     GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
     
@@ -36,7 +39,7 @@ class Config:
     # Базовая подписка
     BASIC_PRICE = 690
     BASIC_DAYS = 30
-    BASIC_AI_LIMIT = 50  # AI-откликов в месяц
+    BASIC_AI_LIMIT = 50
     
     # PRO подписка
     PRO_PRICE = 1490
@@ -53,35 +56,6 @@ class Config:
     PARSE_INTERVAL = 60
     
     @classmethod
-    def get_subscription_config(cls, sub_type: str) -> dict:
-        if sub_type == "pro":
-            return {
-                "name": "PRO",
-                "price": cls.PRO_PRICE,
-                "days": cls.PRO_DAYS,
-                "ai_limit": cls.PRO_AI_LIMIT,
-                "features": [
-                    "✅ Безлимит AI-откликов",
-                    "✅ Детектор мошенников",
-                    "✅ Калькулятор цен",
-                    "✅ CRM для сделок",
-                    "✅ Аналитика рынка",
-                    "✅ Приоритетные уведомления",
-                    "✅ Режим Хищник",
-                ]
-            }
-        else:  # basic
-            return {
-                "name": "Базовая",
-                "price": cls.BASIC_PRICE,
-                "days": cls.BASIC_DAYS,
-                "ai_limit": cls.BASIC_AI_LIMIT,
-                "features": [
-                    "✅ Мониторинг всех бирж",
-                    f"✅ {cls.BASIC_AI_LIMIT} AI-откликов/мес",
-                    "✅ Уведомления о заказах",
-                    "❌ Детектор мошенников",
-                    "❌ CRM для сделок",
-                    "❌ Аналитика рынка",
-                ]
-            }
+    def is_admin(cls, telegram_id: int) -> bool:
+        """Проверяет, является ли пользователь админом"""
+        return telegram_id in cls.ADMIN_IDS
