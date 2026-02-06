@@ -6,20 +6,13 @@ load_dotenv()
 
 
 def get_database_url() -> str:
-    """Получает и преобразует DATABASE_URL для asyncpg"""
     url = os.getenv("DATABASE_URL")
-    
     if not url:
-        # Если нет - используем SQLite
         return "sqlite+aiosqlite:///./data.db"
-    
-    # Railway даёт postgres:// или postgresql://
-    # Нужно заменить на postgresql+asyncpg://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    
     return url
 
 
@@ -37,10 +30,18 @@ class Config:
     # Database
     DATABASE_URL = get_database_url()
     
-    # Subscription
+    # Subscriptions
     TRIAL_DAYS = 3
-    SUBSCRIPTION_PRICE = 690
-    SUBSCRIPTION_DAYS = 30
+    
+    # Базовая подписка
+    BASIC_PRICE = 690
+    BASIC_DAYS = 30
+    BASIC_AI_LIMIT = 50  # AI-откликов в месяц
+    
+    # PRO подписка
+    PRO_PRICE = 1490
+    PRO_DAYS = 30
+    PRO_AI_LIMIT = -1  # Безлимит
     
     # Webhook
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -50,3 +51,37 @@ class Config:
     
     # Parsing
     PARSE_INTERVAL = 60
+    
+    @classmethod
+    def get_subscription_config(cls, sub_type: str) -> dict:
+        if sub_type == "pro":
+            return {
+                "name": "PRO",
+                "price": cls.PRO_PRICE,
+                "days": cls.PRO_DAYS,
+                "ai_limit": cls.PRO_AI_LIMIT,
+                "features": [
+                    "✅ Безлимит AI-откликов",
+                    "✅ Детектор мошенников",
+                    "✅ Калькулятор цен",
+                    "✅ CRM для сделок",
+                    "✅ Аналитика рынка",
+                    "✅ Приоритетные уведомления",
+                    "✅ Режим Хищник",
+                ]
+            }
+        else:  # basic
+            return {
+                "name": "Базовая",
+                "price": cls.BASIC_PRICE,
+                "days": cls.BASIC_DAYS,
+                "ai_limit": cls.BASIC_AI_LIMIT,
+                "features": [
+                    "✅ Мониторинг всех бирж",
+                    f"✅ {cls.BASIC_AI_LIMIT} AI-откликов/мес",
+                    "✅ Уведомления о заказах",
+                    "❌ Детектор мошенников",
+                    "❌ CRM для сделок",
+                    "❌ Аналитика рынка",
+                ]
+            }
