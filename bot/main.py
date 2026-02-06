@@ -431,6 +431,106 @@ async def api_save_settings(request: web.Request) -> web.Response:
         return web.json_response({'error': str(e)}, status=500)
 
 
+# ============ PAYMENT API ============
+
+async def api_create_payment(request: web.Request) -> web.Response:
+    """Создание платежа из Mini App"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        subscription_type = body.get('type', 'basic')  # basic или pro
+        
+        from services.yukassa import yukassa_service
+        
+        payment_id, payment_url = await yukassa_service.create_payment(
+            user.id, 
+            subscription_type
+        )
+        
+        # Сохраняем платёж
+        price = Config.PRO_PRICE if subscription_type == "pro" else Config.BASIC_PRICE
+        await Database.create_payment(user.id, payment_id, price, subscription_type)
+        
+        return web.json_response({
+            'success': True,
+            'payment_id': payment_id,
+            'payment_url': payment_url,
+            'amount': price,
+            'type': subscription_type
+        })
+        
+    except Exception as e:
+        logger.error(f"Payment creation error: {e}")
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_check_payment(request: web.Request) -> web.Response:
+    """Проверка статуса платежа"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        payment_id = body.get('payment_id')
+        
+        if not payment_id:
+            return web.json_response({'error': 'payment_id required'}, status=400)
+        
+        from services.yukassa import yukassa_service
+        
+        payment = await yukassa_service.check_payment(payment_id)
+        
+        if payment and payment.status == "succeeded":
+            # Активируем подписку
+            confirmed_user = await Database.confirm_payment(payment_id)
+            if confirmed_user:
+                return web.json_response({
+                    'success': True,
+                    'status': 'succeeded',
+                    'message': 'Подписка активирована!'
+                })
+        
+        return web.json_response({
+            'success': False,
+            'status': payment.status if payment else 'unknown',
+            'message': 'Платёж ещё не получен'
+        })
+        
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_start_trial(request: web.Request) -> web.Response:
+    """Активация пробного периода"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        sub_type = body.get('type', 'pro')  # Триал даём PRO
+        
+        success = await Database.start_user_trial(user.telegram_id, sub_type)
+        
+        if success:
+            return web.json_response({
+                'success': True,
+                'message': f'Пробный период {Config.TRIAL_DAYS} дня активирован!'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'message': 'Пробный период уже использован'
+            })
+            
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
 # ============ WEB HANDLERS ============
 
 async def handle_index(request):
@@ -482,6 +582,11 @@ def create_web_app():
     app.router.add_post('/api/deals', api_deals_create)
     app.router.add_put('/api/deals', api_deals_update)
     app.router.add_post('/api/income', api_income_add)
+    
+    # Payment API
+    app.router.add_post('/api/payment/create', api_create_payment)
+    app.router.add_post('/api/payment/check', api_check_payment)
+    app.router.add_post('/api/trial/start', api_start_trial)
     
     return app
 
@@ -1130,3 +1235,4 @@ WEBAPP_HTML = '''<!DOCTYPE html>
 
 if __name__ == "__main__":
     asyncio.run(main())
+
