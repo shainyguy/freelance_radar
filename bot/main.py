@@ -79,16 +79,25 @@ async def api_user(request: web.Request) -> web.Response:
     ai_left = await Database.get_ai_responses_left(user.telegram_id)
     level_info = achievements.get_level_info(user.xp_points or 0)
     
+    # Проверяем админа
+    is_admin = Config.is_admin(user.telegram_id)
+    
+    # Админ имеет PRO доступ
+    is_pro = is_admin or (user.subscription_type == 'pro' and user.has_active_subscription())
+    has_subscription = is_admin or user.has_active_subscription()
+    
     return web.json_response({
         'id': user.id,
         'telegram_id': user.telegram_id,
         'username': user.username or '',
         'full_name': user.full_name or 'Пользователь',
-        'subscription_type': user.subscription_type or 'free',
-        'has_subscription': user.has_active_subscription(),
-        'is_pro': user.subscription_type == 'pro' and user.has_active_subscription(),
-        'subscription_days': days_left,
-        'ai_responses_left': ai_left,
+        'subscription_type': 'pro' if is_admin else (user.subscription_type or 'free'),
+        'has_subscription': has_subscription,
+        'is_pro': is_pro,
+        'is_admin': is_admin,
+        'subscription_days': 999 if is_admin else days_left,
+        'ai_responses_left': -1 if is_admin else ai_left,  # Безлимит для админа
+        'trial_used': user.trial_used,
         'categories': user.categories or [],
         'min_budget': user.min_budget or 0,
         'predator_mode': user.predator_mode or False,
@@ -219,9 +228,13 @@ async def api_scam_check(request: web.Request) -> web.Response:
     """Проверка заказа на мошенничество"""
     user = await get_user_from_request(request)
     
-    # Для PRO
-    if not user or (user.subscription_type != 'pro' and user.has_active_subscription()):
-        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    # Проверяем PRO или админ
+    has_access = Config.is_admin(user.telegram_id) if user else False
+    if not has_access and user:
+        has_access = user.subscription_type == 'pro' and user.has_active_subscription()
+    
+    if not has_access:
+        return web.json_response({'error': 'PRO subscription required', 'upgrade': True}, status=403)
     
     try:
         body = await request.json()
@@ -249,12 +262,17 @@ async def api_scam_check(request: web.Request) -> web.Response:
         return web.json_response({'error': str(e)}, status=500)
 
 
-async def api_price_calculate(request: web.Request) -> web.Response:
-    """Калькулятор цены"""
+async def api_scam_check(request: web.Request) -> web.Response:
+    """Проверка заказа на мошенничество"""
     user = await get_user_from_request(request)
     
-    if not user or (user.subscription_type != 'pro' and user.has_active_subscription()):
-        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    # Проверяем PRO или админ
+    has_access = Config.is_admin(user.telegram_id) if user else False
+    if not has_access and user:
+        has_access = user.subscription_type == 'pro' and user.has_active_subscription()
+    
+    if not has_access:
+        return web.json_response({'error': 'PRO subscription required', 'upgrade': True}, status=403)
     
     try:
         body = await request.json()
@@ -338,8 +356,12 @@ async def api_deals_create(request: web.Request) -> web.Response:
     if not user:
         return web.json_response({'error': 'Unauthorized'}, status=401)
     
-    if not user.is_pro():
-        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    has_access = Config.is_admin(user.telegram_id)
+    if not has_access:
+        has_access = user.subscription_type == 'pro' and user.has_active_subscription()
+    
+    if not has_access:
+        return web.json_response({'error': 'PRO subscription required', 'upgrade': True}, status=403)
     
     try:
         body = await request.json()
@@ -431,6 +453,106 @@ async def api_save_settings(request: web.Request) -> web.Response:
         return web.json_response({'error': str(e)}, status=500)
 
 
+# ============ PAYMENT API ============
+
+async def api_create_payment(request: web.Request) -> web.Response:
+    """Создание платежа из Mini App"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        subscription_type = body.get('type', 'basic')  # basic или pro
+        
+        from services.yukassa import yukassa_service
+        
+        payment_id, payment_url = await yukassa_service.create_payment(
+            user.id, 
+            subscription_type
+        )
+        
+        # Сохраняем платёж
+        price = Config.PRO_PRICE if subscription_type == "pro" else Config.BASIC_PRICE
+        await Database.create_payment(user.id, payment_id, price, subscription_type)
+        
+        return web.json_response({
+            'success': True,
+            'payment_id': payment_id,
+            'payment_url': payment_url,
+            'amount': price,
+            'type': subscription_type
+        })
+        
+    except Exception as e:
+        logger.error(f"Payment creation error: {e}")
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_check_payment(request: web.Request) -> web.Response:
+    """Проверка статуса платежа"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        payment_id = body.get('payment_id')
+        
+        if not payment_id:
+            return web.json_response({'error': 'payment_id required'}, status=400)
+        
+        from services.yukassa import yukassa_service
+        
+        payment = await yukassa_service.check_payment(payment_id)
+        
+        if payment and payment.status == "succeeded":
+            # Активируем подписку
+            confirmed_user = await Database.confirm_payment(payment_id)
+            if confirmed_user:
+                return web.json_response({
+                    'success': True,
+                    'status': 'succeeded',
+                    'message': 'Подписка активирована!'
+                })
+        
+        return web.json_response({
+            'success': False,
+            'status': payment.status if payment else 'unknown',
+            'message': 'Платёж ещё не получен'
+        })
+        
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_start_trial(request: web.Request) -> web.Response:
+    """Активация пробного периода"""
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        sub_type = body.get('type', 'pro')  # Триал даём PRO
+        
+        success = await Database.start_user_trial(user.telegram_id, sub_type)
+        
+        if success:
+            return web.json_response({
+                'success': True,
+                'message': f'Пробный период {Config.TRIAL_DAYS} дня активирован!'
+            })
+        else:
+            return web.json_response({
+                'success': False,
+                'message': 'Пробный период уже использован'
+            })
+            
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
 # ============ WEB HANDLERS ============
 
 async def handle_index(request):
@@ -483,8 +605,12 @@ def create_web_app():
     app.router.add_put('/api/deals', api_deals_update)
     app.router.add_post('/api/income', api_income_add)
     
+    # Payment API - ДОБАВЛЯЕМ
+    app.router.add_post('/api/payment/create', api_create_payment)
+    app.router.add_post('/api/payment/check', api_check_payment)
+    app.router.add_post('/api/trial/start', api_start_trial)
+    
     return app
-
 
 # ============ MAIN ============
 
@@ -1115,14 +1241,198 @@ WEBAPP_HTML = '''<!DOCTYPE html>
             document.getElementById('subscriptionCards').innerHTML=pro+basic;
         }
         
-        function subscribe(type){toast('Оплата через бота @FreelanceRadarBot');tg.close();}
+        async function subscribe(type) {
+    haptic('medium');
+    
+    // Показываем модалку с загрузкой
+    document.getElementById('modal').classList.add('show');
+    document.getElementById('modalTitle').textContent = '💳 Создаём платёж...';
+    document.getElementById('modalText').textContent = 'Подождите...';
+    document.getElementById('modalBtn').style.display = 'none';
+    
+    try {
+        const r = await fetch(API + '/api/payment/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: type, initData: tg.initData })
+        });
+        const d = await r.json();
         
-        function copyText(){navigator.clipboard.writeText(document.getElementById('modalText').textContent).then(()=>{toast('📋 Скопировано!');haptic('success');closeModal();});}
-        function closeModal(e){if(!e||e.target.id==='modal'){document.getElementById('modal').classList.remove('show');document.getElementById('modalTitle').textContent='✨ AI-отклик';document.getElementById('modalBtn').textContent='📋 Скопировать';document.getElementById('modalBtn').onclick=copyText;}}
-        function closeScamModal(e){if(!e||e.target.id==='scamModal')document.getElementById('scamModal').classList.remove('show');}
-        function closePriceModal(e){if(!e||e.target.id==='priceModal')document.getElementById('priceModal').classList.remove('show');}
-        function openUrl(u){haptic('light');tg.openLink(u);}
-        function toast(m,err=false){const t=document.getElementById('toast');t.textContent=m;t.className='toast'+(err?' error':'');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
+        if (d.success && d.payment_url) {
+            // Открываем страницу оплаты
+            document.getElementById('modalTitle').textContent = '💳 Оплата';
+            document.getElementById('modalText').textContent = 
+                `Тип: ${type === 'pro' ? 'PRO ⭐' : 'Базовая'}\nСумма: ${d.amount}₽\n\nНажмите кнопку для оплаты:`;
+            document.getElementById('modalBtn').style.display = 'block';
+            document.getElementById('modalBtn').textContent = '💳 Перейти к оплате';
+            document.getElementById('modalBtn').onclick = () => {
+                tg.openLink(d.payment_url);
+                // После открытия показываем кнопку проверки
+                setTimeout(() => {
+                    document.getElementById('modalText').textContent += '\n\n✅ После оплаты нажмите "Проверить"';
+                    document.getElementById('modalBtn').textContent = '✅ Проверить оплату';
+                    document.getElementById('modalBtn').onclick = () => checkPaymentStatus(d.payment_id);
+                }, 2000);
+            };
+        } else {
+            throw new Error(d.error || 'Unknown error');
+        }
+    } catch (e) {
+        document.getElementById('modalTitle').textContent = '❌ Ошибка';
+        document.getElementById('modalText').textContent = 'Не удалось создать платёж. Попробуйте через бота.';
+        document.getElementById('modalBtn').style.display = 'block';
+        document.getElementById('modalBtn').textContent = '🤖 Открыть бота';
+        document.getElementById('modalBtn').onclick = () => {
+            tg.openTelegramLink('https://t.me/FreelanceRadarBot');
+            closeModal();
+        };
+    }
+}
+
+async function checkPaymentStatus(paymentId) {
+    haptic('medium');
+    document.getElementById('modalText').textContent = 'Проверяем оплату...';
+    
+    try {
+        const r = await fetch(API + '/api/payment/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ payment_id: paymentId, initData: tg.initData })
+        });
+        const d = await r.json();
+        
+        if (d.success && d.status === 'succeeded') {
+            document.getElementById('modalTitle').textContent = '🎉 Успешно!';
+            document.getElementById('modalText').textContent = 'Подписка активирована!\n\nТеперь вам доступны все PRO функции.';
+            document.getElementById('modalBtn').textContent = '🚀 Отлично!';
+            document.getElementById('modalBtn').onclick = () => {
+                closeModal();
+                loadUser(); // Перезагружаем данные пользователя
+            };
+            haptic('success');
+        } else {
+            document.getElementById('modalText').textContent = 'Платёж ещё обрабатывается.\n\nПопробуйте проверить через минуту.';
+            haptic('error');
+        }
+    } catch (e) {
+        document.getElementById('modalText').textContent = 'Ошибка проверки. Попробуйте позже.';
+    }
+}
+
+async function startTrial() {
+    haptic('medium');
+    
+    if (user && user.trial_used) {
+        toast('Пробный период уже использован', true);
+        return;
+    }
+    
+    try {
+        const r = await fetch(API + '/api/trial/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'pro', initData: tg.initData })
+        });
+        const d = await r.json();
+        
+        if (d.success) {
+            toast('🎉 ' + d.message);
+            haptic('success');
+            await loadUser(); // Перезагружаем данные
+        } else {
+            toast(d.message || 'Ошибка', true);
+        }
+    } catch (e) {
+        toast('Ошибка активации', true);
+    }
+}
+
+// Обновляем renderSubscriptions:
+function renderSubscriptions() {
+    const trialBtn = user && user.trial_used 
+        ? '' 
+        : `<button class="btn btn-success" onclick="startTrial()">🎁 Попробовать 3 дня бесплатно</button>`;
+    
+    const proCard = `
+        <div class="sub-card recommended">
+            <div class="sub-header">
+                <div class="sub-name">PRO ⭐</div>
+                <div class="sub-price">${Config?.PRO_PRICE || 1490}₽<span>/мес</span></div>
+            </div>
+            <ul class="sub-features">
+                <li>✅ Безлимит AI-откликов</li>
+                <li>✅ Детектор мошенников</li>
+                <li>✅ Калькулятор цен</li>
+                <li>✅ CRM для сделок</li>
+                <li>✅ Аналитика рынка</li>
+                <li>✅ Режим Хищник</li>
+            </ul>
+            <button class="btn btn-pro" onclick="subscribe('pro')">💎 Оформить PRO</button>
+        </div>`;
+    
+    const basicCard = `
+        <div class="sub-card">
+            <div class="sub-header">
+                <div class="sub-name">Базовая</div>
+                <div class="sub-price">${Config?.BASIC_PRICE || 690}₽<span>/мес</span></div>
+            </div>
+            <ul class="sub-features">
+                <li>✅ Мониторинг всех бирж</li>
+                <li>✅ 50 AI-откликов/мес</li>
+                <li>✅ Уведомления</li>
+                <li>❌ Детектор мошенников</li>
+                <li>❌ CRM для сделок</li>
+            </ul>
+            <button class="btn btn-primary" onclick="subscribe('basic')">📦 Оформить</button>
+        </div>`;
+    
+    document.getElementById('subscriptionCards').innerHTML = trialBtn + proCard + basicCard;
+}
+
+// Обновляем subBanner в loadUser:
+// Заменяем часть где subBanner:
+
+if (user.is_admin) {
+    document.getElementById('subBanner').innerHTML = `
+        <div class="setting-item" style="background:linear-gradient(135deg,#9b59b6,#8e44ad);">
+            <div class="setting-info">
+                <div class="setting-icon">👑</div>
+                <div class="setting-text">
+                    <h4 style="color:white;">Админ</h4>
+                    <p style="color:rgba(255,255,255,0.8);">Полный доступ ко всем функциям</p>
+                </div>
+            </div>
+        </div>`;
+} else if (user.is_pro) {
+    document.getElementById('subBanner').innerHTML = `
+        <div class="setting-item" style="background:linear-gradient(135deg,var(--pro),#e67e22);">
+            <div class="setting-info">
+                <div class="setting-icon">⭐</div>
+                <div class="setting-text">
+                    <h4 style="color:white;">PRO подписка</h4>
+                    <p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p>
+                </div>
+            </div>
+        </div>`;
+} else if (user.has_subscription) {
+    document.getElementById('subBanner').innerHTML = `
+        <div class="setting-item" style="background:linear-gradient(135deg,var(--success),#00b894);">
+            <div class="setting-info">
+                <div class="setting-icon">📦</div>
+                <div class="setting-text">
+                    <h4 style="color:white;">Базовая подписка</h4>
+                    <p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p>
+                </div>
+            </div>
+        </div>`;
+} else {
+    document.getElementById('subBanner').innerHTML = `
+        <div class="sub-card" style="background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;">
+            <h3 style="font-size:15px;margin-bottom:8px;">🚀 Получи полный доступ</h3>
+            <p style="font-size:12px;opacity:0.9;margin-bottom:12px;">AI-отклики, детектор кидал, CRM и многое другое</p>
+            ${user.trial_used ? '' : '<button class="btn" style="background:white;color:var(--accent);" onclick="startTrial()">🎁 3 дня бесплатно</button>'}
+        </div>`;
+}
     </script>
 </body>
 </html>'''
@@ -1130,3 +1440,4 @@ WEBAPP_HTML = '''<!DOCTYPE html>
 
 if __name__ == "__main__":
     asyncio.run(main())
+
