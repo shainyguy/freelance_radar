@@ -186,6 +186,21 @@ class Database:
                 else:
                     user.subscription_end = datetime.utcnow() + timedelta(days=days)
                 await session.commit()
+
+    @staticmethod
+    async def is_admin(telegram_id: int) -> bool:
+        """Проверяет админа"""
+        return Config.is_admin(telegram_id)
+    
+    @staticmethod
+    async def has_pro_access(telegram_id: int) -> bool:
+        """Проверяет доступ к PRO (подписка или админ)"""
+        if Config.is_admin(telegram_id):
+            return True
+        user = await Database.get_user(telegram_id)
+        if not user:
+            return False
+        return user.subscription_type == "pro" and user.has_active_subscription()
     
     @staticmethod
     async def use_ai_response(telegram_id: int) -> bool:
@@ -617,3 +632,4 @@ class Database:
                 "avg_budget": avg_budget,
                 "sources": sources
             }
+
