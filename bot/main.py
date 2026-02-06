@@ -965,479 +965,323 @@ WEBAPP_HTML = '''<!DOCTYPE html>
         </div>
     </div>
     
-    <script>
-        const API = '{{API_BASE}}';
-        const tg = window.Telegram.WebApp;
-        
-        let user = null;
-        let orders = [];
-        let selectedCategories = [];
-        
-        const CATEGORIES = [
-            {id:'python',name:'🐍 Python'},{id:'design',name:'🎨 Дизайн'},
-            {id:'copywriting',name:'✍️ Тексты'},{id:'marketing',name:'📈 Маркетинг'}
-        ];
-        
-        tg.ready();
-        tg.expand();
-        
-        document.addEventListener('DOMContentLoaded',async()=>{
-            await loadUser();
-            await loadOrders();
-            await loadStats();
-            await loadAchievements();
-            renderCategories();
-            renderSubscriptions();
-            haptic('light');
-        });
-        
-        function haptic(t){if(tg.HapticFeedback){if(t==='success')tg.HapticFeedback.notificationOccurred('success');else if(t==='error')tg.HapticFeedback.notificationOccurred('error');else tg.HapticFeedback.impactOccurred(t);}}
-        
-        function showPage(name){
-            document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-            document.getElementById('page-'+name).classList.add('active');
-            event.currentTarget.classList.add('active');
-            haptic('light');
-            if(name==='deals')loadDeals();
-            if(name==='analytics')loadStats();
-        }
-        
-        async function loadUser(){
-            try{
-                const r=await fetch(API+'/api/user',{headers:{'X-Telegram-Init-Data':tg.initData}});
-                user=await r.json();
-                
-                document.getElementById('userName').textContent=user.full_name||'Пользователь';
-                document.getElementById('headerLevel').innerHTML=user.level?.icon+' Ур.'+user.level?.level;
-                
-                if(user.is_pro){
-                    document.getElementById('proBadge').style.display='block';
-                    document.getElementById('userSub').textContent='PRO подписка';
-                }else if(user.has_subscription){
-                    document.getElementById('userSub').textContent='Базовая ('+user.subscription_days+' дн.)';
-                }
-                
-                document.getElementById('statAI').textContent=user.ai_responses_left===-1?'∞':user.ai_responses_left;
-                document.getElementById('statStreak').textContent=user.streak_days||0;
-                
-                document.getElementById('predatorToggle').checked=user.predator_mode||false;
-                selectedCategories=user.categories||[];
-                
-            }catch(e){console.error(e);}
-        }
-        
-        async function loadOrders(){
-            const list=document.getElementById('ordersList');
-            list.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-            try{
-                const r=await fetch(API+'/api/orders');
-                orders=await r.json();
-                document.getElementById('ordersCount').textContent=orders.length;
-                document.getElementById('statOrders').textContent=orders.length;
-                if(!orders.length){list.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Нет заказов</div></div>';return;}
-                list.innerHTML=orders.map(o=>createOrderCard(o)).join('');
-            }catch(e){list.innerHTML='<div class="empty">Ошибка загрузки</div>';}
-        }
-        
-        function createOrderCard(o){
-            const srcMap={hh:'🔴',kwork:'🟢','fl.ru':'🔵','freelance.ru':'🟣'};
-            const srcClass=o.source.replace('.','').replace('_','');
-            const scamClass=o.scam_score>=60?'danger':o.scam_score>=30?'warning':'safe';
-            const scamText=o.scam_score>=60?'Высокий риск':o.scam_score>=30?'Средний риск':'Безопасно';
+<script>
+    const API = '{{API_BASE}}';
+    const tg = window.Telegram.WebApp;
+    
+    let user = null;
+    let orders = [];
+    let selectedCategories = [];
+    let currentPaymentId = null;
+    
+    const CATEGORIES = [
+        {id:'python',name:'🐍 Python'},{id:'design',name:'🎨 Дизайн'},
+        {id:'copywriting',name:'✍️ Тексты'},{id:'marketing',name:'📈 Маркетинг'}
+    ];
+    
+    tg.ready();
+    tg.expand();
+    
+    document.addEventListener('DOMContentLoaded',async()=>{
+        await loadUser();
+        await loadOrders();
+        await loadStats();
+        await loadAchievements();
+        renderCategories();
+        haptic('light');
+    });
+    
+    function haptic(t){if(tg.HapticFeedback){if(t==='success')tg.HapticFeedback.notificationOccurred('success');else if(t==='error')tg.HapticFeedback.notificationOccurred('error');else tg.HapticFeedback.impactOccurred(t);}}
+    
+    function showPage(name){
+        document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+        document.getElementById('page-'+name).classList.add('active');
+        event.currentTarget.classList.add('active');
+        haptic('light');
+        if(name==='deals')loadDeals();
+        if(name==='analytics')loadStats();
+    }
+    
+    async function loadUser(){
+        try{
+            const r=await fetch(API+'/api/user',{headers:{'X-Telegram-Init-Data':tg.initData}});
+            user=await r.json();
             
-            return `<div class="order-card ${o.hot?'hot':''}">
-                <div class="order-header">
-                    <div class="order-source ${srcClass}">${srcMap[o.source]||'📋'}</div>
-                    <div class="order-info">
-                        <div class="order-title">${esc(o.title)}</div>
-                        <div class="order-meta"><span>💰${o.budget}</span><span>⏰${o.time_ago}</span><span>${o.source}</span></div>
-                    </div>
-                </div>
-                <div class="scam-indicator ${scamClass}" onclick="checkScam(${o.id})">
-                    <span>${scamClass==='safe'?'✅':scamClass==='warning'?'⚠️':'🔴'}</span>
-                    <span>${scamText}</span>
-                    <span style="margin-left:auto;font-size:10px;">Подробнее →</span>
-                </div>
-                <div class="order-actions">
-                    <button class="order-btn primary" onclick="generateResponse(${o.id})">✨ Отклик</button>
-                    <button class="order-btn secondary" onclick="calcPrice(${o.id})">💰 Цена</button>
-                    <button class="order-btn secondary" onclick="openUrl('${esc(o.url)}')">🔗</button>
-                </div>
-            </div>`;
+            document.getElementById('userName').textContent=user.full_name||'Пользователь';
+            document.getElementById('headerLevel').innerHTML=(user.level?.icon||'🌱')+' Ур.'+(user.level?.level||1);
+            
+            if(user.is_admin){
+                document.getElementById('proBadge').style.display='block';
+                document.getElementById('proBadge').textContent='ADMIN';
+                document.getElementById('proBadge').style.background='linear-gradient(135deg,#9b59b6,#8e44ad)';
+                document.getElementById('userSub').textContent='👑 Админ';
+            }else if(user.is_pro){
+                document.getElementById('proBadge').style.display='block';
+                document.getElementById('userSub').textContent='PRO ⭐ ('+user.subscription_days+' дн.)';
+            }else if(user.has_subscription){
+                document.getElementById('userSub').textContent='Базовая ('+user.subscription_days+' дн.)';
+            }else{
+                document.getElementById('userSub').textContent='Бесплатный аккаунт';
+            }
+            
+            document.getElementById('statAI').textContent=user.ai_responses_left===-1?'∞':user.ai_responses_left;
+            document.getElementById('statStreak').textContent=user.streak_days||0;
+            
+            document.getElementById('predatorToggle').checked=user.predator_mode||false;
+            selectedCategories=user.categories||[];
+            
+            renderSubBanner();
+            renderSubscriptions();
+            
+        }catch(e){console.error(e);}
+    }
+    
+    function renderSubBanner(){
+        const banner=document.getElementById('subBanner');
+        if(user.is_admin){
+            banner.innerHTML=`<div class="setting-item" style="background:linear-gradient(135deg,#9b59b6,#8e44ad);"><div class="setting-info"><div class="setting-icon">👑</div><div class="setting-text"><h4 style="color:white;">Режим администратора</h4><p style="color:rgba(255,255,255,0.8);">Полный доступ ко всем функциям</p></div></div></div>`;
+        }else if(user.is_pro){
+            banner.innerHTML=`<div class="setting-item" style="background:linear-gradient(135deg,var(--pro),#e67e22);"><div class="setting-info"><div class="setting-icon">⭐</div><div class="setting-text"><h4 style="color:white;">PRO подписка</h4><p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p></div></div></div>`;
+        }else if(user.has_subscription){
+            banner.innerHTML=`<div class="setting-item" style="background:linear-gradient(135deg,var(--success),#00b894);"><div class="setting-info"><div class="setting-icon">📦</div><div class="setting-text"><h4 style="color:white;">Базовая подписка</h4><p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p></div></div></div>`;
+        }else{
+            banner.innerHTML=`<div class="sub-card" style="background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;"><h3 style="font-size:15px;margin-bottom:8px;">🚀 Получи полный доступ</h3><p style="font-size:12px;opacity:0.9;margin-bottom:12px;">AI-отклики, детектор кидал, CRM и многое другое</p>${!user.trial_used?'<button class="btn" style="background:white;color:var(--accent);" onclick="startTrial()">🎁 3 дня бесплатно</button>':''}</div>`;
         }
+    }
+    
+    function renderSubscriptions(){
+        const trialBtn=!user?.trial_used?`<button class="btn btn-success" style="margin-bottom:12px;" onclick="startTrial()">🎁 Попробовать PRO 3 дня бесплатно</button>`:'';
+        const proCard=`<div class="sub-card recommended"><div class="sub-header"><div class="sub-name">PRO ⭐</div><div class="sub-price">1490₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Безлимит AI-откликов</li><li>✅ Детектор мошенников</li><li>✅ Калькулятор цен</li><li>✅ CRM для сделок</li><li>✅ Аналитика рынка</li><li>✅ Режим Хищник</li></ul><button class="btn btn-pro" onclick="subscribe('pro')">💎 Оформить PRO</button></div>`;
+        const basicCard=`<div class="sub-card"><div class="sub-header"><div class="sub-name">Базовая</div><div class="sub-price">690₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Мониторинг всех бирж</li><li>✅ 50 AI-откликов/мес</li><li>✅ Уведомления</li><li>❌ Детектор мошенников</li><li>❌ CRM</li></ul><button class="btn btn-primary" onclick="subscribe('basic')">📦 Оформить</button></div>`;
+        document.getElementById('subscriptionCards').innerHTML=trialBtn+proCard+basicCard;
+    }
+    
+    async function subscribe(type){
+        haptic('medium');
+        showModal('💳 Создаём платёж...','Подождите...');
+        document.getElementById('modalBtn').style.display='none';
         
-        function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+        try{
+            const r=await fetch(API+'/api/payment/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:type,initData:tg.initData})});
+            const d=await r.json();
+            
+            if(d.success&&d.payment_url){
+                currentPaymentId=d.payment_id;
+                const typeName=type==='pro'?'PRO ⭐':'Базовая';
+                showModal('💳 Оплата '+typeName,`Сумма: ${d.amount}₽\n\nНажмите кнопку для перехода к оплате:`);
+                document.getElementById('modalBtn').style.display='block';
+                document.getElementById('modalBtn').textContent='💳 Перейти к оплате';
+                document.getElementById('modalBtn').onclick=()=>{
+                    tg.openLink(d.payment_url);
+                    setTimeout(()=>{
+                        showModal('💳 Оплата','После оплаты нажмите кнопку проверки:');
+                        document.getElementById('modalBtn').textContent='✅ Проверить оплату';
+                        document.getElementById('modalBtn').onclick=()=>checkPaymentStatus(d.payment_id);
+                    },1000);
+                };
+            }else{
+                throw new Error(d.error||'Error');
+            }
+        }catch(e){
+            showModal('❌ Ошибка','Не удалось создать платёж.\n\nПопробуйте через бота @FreelanceRadarBot');
+            document.getElementById('modalBtn').style.display='block';
+            document.getElementById('modalBtn').textContent='Закрыть';
+            document.getElementById('modalBtn').onclick=closeModal;
+        }
+    }
+    
+    async function checkPaymentStatus(paymentId){
+        haptic('medium');
+        document.getElementById('modalText').textContent='Проверяем оплату...';
         
-        async function turboParse(){
-            const btn=document.getElementById('turboBtn');
-            btn.disabled=true;
-            document.getElementById('turboText').textContent='ИЩЕМ...';
-            haptic('heavy');
-            try{
-                const r=await fetch(API+'/api/turbo-parse',{method:'POST'});
-                const d=await r.json();
-                toast('✅ Найдено '+d.new_orders+' заказов!');
+        try{
+            const r=await fetch(API+'/api/payment/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_id:paymentId,initData:tg.initData})});
+            const d=await r.json();
+            
+            if(d.success&&d.status==='succeeded'){
+                showModal('🎉 Успешно!','Подписка активирована!\n\nТеперь вам доступны все функции.');
+                document.getElementById('modalBtn').textContent='🚀 Отлично!';
+                document.getElementById('modalBtn').onclick=()=>{closeModal();loadUser();};
                 haptic('success');
-                await loadOrders();
-            }catch(e){toast('Ошибка',true);haptic('error');}
-            document.getElementById('turboText').textContent='НАЙТИ ЗАКАЗЫ';
-            btn.disabled=false;
+            }else{
+                document.getElementById('modalText').textContent='Платёж ещё обрабатывается.\n\nПопробуйте через минуту.';
+                haptic('error');
+            }
+        }catch(e){
+            document.getElementById('modalText').textContent='Ошибка проверки.';
         }
-        
-        async function generateResponse(id){
-            haptic('medium');
-            document.getElementById('modal').classList.add('show');
-            document.getElementById('modalText').textContent='Генерирую отклик...';
-            try{
-                const r=await fetch(API+'/api/generate-response',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
-                const d=await r.json();
-                if(d.error==='limit_reached'){
-                    document.getElementById('modalTitle').textContent='⚠️ Лимит исчерпан';
-                    document.getElementById('modalText').textContent=d.message+'\\n\\nОформи PRO для безлимита!';
-                    document.getElementById('modalBtn').textContent='💎 Оформить PRO';
-                    document.getElementById('modalBtn').onclick=()=>{closeModal();showPage('profile');};
-                }else{
-                    document.getElementById('modalText').textContent=d.response;
-                    if(d.xp_earned)toast('+'+d.xp_earned+' XP');
-                }
-                haptic('success');
-            }catch(e){document.getElementById('modalText').textContent='Ошибка';}
-        }
-        
-        async function checkScam(id){
-            if(!user?.is_pro){toast('Только для PRO',true);return;}
-            haptic('medium');
-            document.getElementById('scamModal').classList.add('show');
-            document.getElementById('scamResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
-            try{
-                const r=await fetch(API+'/api/scam-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
-                const d=await r.json();
-                document.getElementById('scamResult').innerHTML=`
-                    <div class="scam-indicator ${d.risk_level}" style="justify-content:center;font-size:14px;">
-                        ${d.risk_emoji} ${d.risk_text} (${d.risk_score}%)
-                    </div>
-                    <p style="margin:12px 0;font-size:13px;">${d.recommendation}</p>
-                    ${d.warnings.length?'<p style="font-size:12px;color:var(--danger);">⚠️ '+d.warnings.join('<br>⚠️ ')+'</p>':''}
-                    ${d.green_signs.length?'<p style="font-size:12px;color:var(--success);margin-top:8px;">✅ '+d.green_signs.join('<br>✅ ')+'</p>':''}
-                `;
-            }catch(e){document.getElementById('scamResult').textContent='Ошибка';}
-        }
-        
-        async function calcPrice(id){
-            if(!user?.is_pro){toast('Только для PRO',true);return;}
-            haptic('medium');
-            document.getElementById('priceModal').classList.add('show');
-            document.getElementById('priceResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
-            try{
-                const r=await fetch(API+'/api/price-calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
-                const d=await r.json();
-                document.getElementById('priceResult').innerHTML=`
-                    <div class="analytics-card"><div class="analytics-title">Рекомендуемая цена</div><div class="analytics-value">${d.sweet_spot}</div></div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0;">
-                        <div class="analytics-card"><div class="analytics-title">Минимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_min.toLocaleString()}₽</div></div>
-                        <div class="analytics-card"><div class="analytics-title">Максимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_max.toLocaleString()}₽</div></div>
-                    </div>
-                    <p style="font-size:12px;color:var(--text2);">Сложность: ${d.complexity_text}</p>
-                    <p style="font-size:13px;margin-top:10px;">${d.tip}</p>
-                `;
-            }catch(e){document.getElementById('priceResult').textContent='Ошибка';}
-        }
-        
-        async function loadStats(){
-            try{
-                const r=await fetch(API+'/api/stats',{headers:{'X-Telegram-Init-Data':tg.initData}});
-                const d=await r.json();
-                document.getElementById('marketOrders').textContent=d.market?.weekly_orders||0;
-                document.getElementById('marketBudget').textContent=(d.market?.avg_budget||0).toLocaleString()+'₽';
-                document.getElementById('userMonthly').textContent=(d.user?.monthly_earnings||0).toLocaleString()+' ₽';
-                document.getElementById('userTotal').textContent=(d.user?.total_earnings||0).toLocaleString()+' ₽';
-            }catch(e){}
-        }
-        
-        async function loadAchievements(){
-            try{
-                const r=await fetch(API+'/api/achievements',{headers:{'X-Telegram-Init-Data':tg.initData}});
-                const d=await r.json();
-                document.getElementById('levelCard').innerHTML=`
-                    <div class="level-header">
-                        <div class="level-name">${d.level.current.icon} ${d.level.current.name}</div>
-                        <div class="level-xp">${d.level.xp} XP</div>
-                    </div>
-                    <div class="level-bar"><div class="level-fill" style="width:${d.level.progress_percent}%"></div></div>
-                    ${d.level.next?`<div style="font-size:10px;margin-top:6px;opacity:0.8;">До ${d.level.next.name}: ${d.level.needed_xp-d.level.progress_xp} XP</div>`:''}
-                `;
-                document.getElementById('achievementsGrid').innerHTML=d.achievements.slice(0,8).map(a=>`
-                    <div class="achievement ${a.unlocked?'unlocked':''}">
-                        <div class="achievement-icon">${a.icon}</div>
-                        <div class="achievement-name">${a.name}</div>
-                    </div>
-                `).join('');
-            }catch(e){}
-        }
-        
-        async function loadDeals(){
-            try{
-                const r=await fetch(API+'/api/deals',{headers:{'X-Telegram-Init-Data':tg.initData}});
-                const deals=await r.json();
-                
-                const active=deals.filter(d=>d.status!=='completed'&&d.status!=='cancelled').length;
-                const done=deals.filter(d=>d.status==='completed').length;
-                const total=deals.filter(d=>d.status==='completed').reduce((s,d)=>s+d.amount,0);
-                
-                document.getElementById('dealActive').textContent=active;
-                document.getElementById('dealDone').textContent=done;
-                document.getElementById('dealTotal').textContent=total.toLocaleString()+'₽';
-                
-                if(!deals.length){document.getElementById('dealsList').innerHTML='<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Добавь первую сделку</div></div>';return;}
-                
-                document.getElementById('dealsList').innerHTML=deals.map(d=>`
-                    <div class="deal-card">
-                        <div class="deal-header">
-                            <div><div class="deal-title">${esc(d.title)}</div><div class="deal-meta">${d.client_name||'—'}</div></div>
-                            <div class="deal-amount">${d.amount?.toLocaleString()||0}₽</div>
-                        </div>
-                        <span class="deal-status ${d.status}">${{lead:'Лид',negotiation:'Переговоры',in_progress:'В работе',review:'На проверке',completed:'Завершён',cancelled:'Отменён'}[d.status]||d.status}</span>
-                    </div>
-                `).join('');
-            }catch(e){}
-        }
-        
-        function showAddDealModal(){if(!user?.is_pro){toast('Только для PRO',true);return;}document.getElementById('dealModal').classList.add('show');}
-        function closeDealModal(e){if(!e||e.target.id==='dealModal')document.getElementById('dealModal').classList.remove('show');}
-        
-        async function createDeal(){
-            const title=document.getElementById('dealTitle').value;
-            const client=document.getElementById('dealClient').value;
-            const amount=parseInt(document.getElementById('dealAmount').value)||0;
-            if(!title){toast('Введи название',true);return;}
-            try{
-                await fetch(API+'/api/deals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,client_name:client,amount,initData:tg.initData})});
-                toast('✅ Сделка добавлена!');
-                closeDealModal();
-                loadDeals();
-            }catch(e){toast('Ошибка',true);}
-        }
-        
-        function renderCategories(){
-            document.getElementById('categoriesGrid').innerHTML=CATEGORIES.map(c=>`
-                <div class="category-chip ${selectedCategories.includes(c.id)?'active':''}" onclick="toggleCat('${c.id}',this)">${c.name}</div>
-            `).join('');
-        }
-        
-        function toggleCat(id,el){haptic('light');if(selectedCategories.includes(id)){selectedCategories=selectedCategories.filter(c=>c!==id);el.classList.remove('active');}else{selectedCategories.push(id);el.classList.add('active');}}
-        
-        async function saveCategories(){
-            try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({categories:selectedCategories,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}
-        }
-        
-        async function saveSetting(key,val){
-            try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}
-        }
-        
-        function renderSubscriptions(){
-            const basic=`<div class="sub-card"><div class="sub-header"><div class="sub-name">Базовая</div><div class="sub-price">690₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Мониторинг всех бирж</li><li>✅ 50 AI-откликов/мес</li><li>✅ Уведомления</li><li>❌ Детектор кидал</li><li>❌ CRM для сделок</li></ul><button class="btn btn-primary" onclick="subscribe('basic')">Попробовать 3 дня</button></div>`;
-            const pro=`<div class="sub-card recommended"><div class="sub-header"><div class="sub-name">PRO ⭐</div><div class="sub-price">1490₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Безлимит AI-откликов</li><li>✅ Детектор мошенников</li><li>✅ Калькулятор цен</li><li>✅ CRM для сделок</li><li>✅ Аналитика рынка</li><li>✅ Приоритетные пуши</li></ul><button class="btn btn-pro" onclick="subscribe('pro')">Оформить PRO</button></div>`;
-            document.getElementById('subscriptionCards').innerHTML=pro+basic;
-        }
-        
-        async function subscribe(type) {
-    haptic('medium');
-    
-    // Показываем модалку с загрузкой
-    document.getElementById('modal').classList.add('show');
-    document.getElementById('modalTitle').textContent = '💳 Создаём платёж...';
-    document.getElementById('modalText').textContent = 'Подождите...';
-    document.getElementById('modalBtn').style.display = 'none';
-    
-    try {
-        const r = await fetch(API + '/api/payment/create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: type, initData: tg.initData })
-        });
-        const d = await r.json();
-        
-        if (d.success && d.payment_url) {
-            // Открываем страницу оплаты
-            document.getElementById('modalTitle').textContent = '💳 Оплата';
-            document.getElementById('modalText').textContent = 
-                `Тип: ${type === 'pro' ? 'PRO ⭐' : 'Базовая'}\nСумма: ${d.amount}₽\n\nНажмите кнопку для оплаты:`;
-            document.getElementById('modalBtn').style.display = 'block';
-            document.getElementById('modalBtn').textContent = '💳 Перейти к оплате';
-            document.getElementById('modalBtn').onclick = () => {
-                tg.openLink(d.payment_url);
-                // После открытия показываем кнопку проверки
-                setTimeout(() => {
-                    document.getElementById('modalText').textContent += '\n\n✅ После оплаты нажмите "Проверить"';
-                    document.getElementById('modalBtn').textContent = '✅ Проверить оплату';
-                    document.getElementById('modalBtn').onclick = () => checkPaymentStatus(d.payment_id);
-                }, 2000);
-            };
-        } else {
-            throw new Error(d.error || 'Unknown error');
-        }
-    } catch (e) {
-        document.getElementById('modalTitle').textContent = '❌ Ошибка';
-        document.getElementById('modalText').textContent = 'Не удалось создать платёж. Попробуйте через бота.';
-        document.getElementById('modalBtn').style.display = 'block';
-        document.getElementById('modalBtn').textContent = '🤖 Открыть бота';
-        document.getElementById('modalBtn').onclick = () => {
-            tg.openTelegramLink('https://t.me/FreelanceRadarBot');
-            closeModal();
-        };
     }
-}
-
-async function checkPaymentStatus(paymentId) {
-    haptic('medium');
-    document.getElementById('modalText').textContent = 'Проверяем оплату...';
     
-    try {
-        const r = await fetch(API + '/api/payment/check', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ payment_id: paymentId, initData: tg.initData })
-        });
-        const d = await r.json();
-        
-        if (d.success && d.status === 'succeeded') {
-            document.getElementById('modalTitle').textContent = '🎉 Успешно!';
-            document.getElementById('modalText').textContent = 'Подписка активирована!\n\nТеперь вам доступны все PRO функции.';
-            document.getElementById('modalBtn').textContent = '🚀 Отлично!';
-            document.getElementById('modalBtn').onclick = () => {
-                closeModal();
-                loadUser(); // Перезагружаем данные пользователя
-            };
+    async function startTrial(){
+        if(user?.trial_used){toast('Пробный период уже использован',true);return;}
+        haptic('medium');
+        try{
+            const r=await fetch(API+'/api/trial/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'pro',initData:tg.initData})});
+            const d=await r.json();
+            if(d.success){toast('🎉 '+d.message);haptic('success');await loadUser();}
+            else{toast(d.message||'Ошибка',true);}
+        }catch(e){toast('Ошибка',true);}
+    }
+    
+    function showModal(title,text){
+        document.getElementById('modalTitle').textContent=title;
+        document.getElementById('modalText').textContent=text;
+        document.getElementById('modal').classList.add('show');
+    }
+    
+    async function loadOrders(){
+        const list=document.getElementById('ordersList');
+        list.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+        try{
+            const r=await fetch(API+'/api/orders');
+            orders=await r.json();
+            document.getElementById('ordersCount').textContent=orders.length;
+            document.getElementById('statOrders').textContent=orders.length;
+            if(!orders.length){list.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Нажмите "Найти заказы"</div></div>';return;}
+            list.innerHTML=orders.map(o=>createOrderCard(o)).join('');
+        }catch(e){list.innerHTML='<div class="empty">Ошибка загрузки</div>';}
+    }
+    
+    function createOrderCard(o){
+        const srcMap={hh:'🔴',kwork:'🟢','fl.ru':'🔵','freelance.ru':'🟣'};
+        const srcClass=o.source.replace('.','').replace('_','');
+        const scamClass=o.scam_score>=60?'danger':o.scam_score>=30?'warning':'safe';
+        const scamText=o.scam_score>=60?'⚠️ Риск':o.scam_score>=30?'Проверить':'✅ Ок';
+        return `<div class="order-card ${o.hot?'hot':''}"><div class="order-header"><div class="order-source ${srcClass}">${srcMap[o.source]||'📋'}</div><div class="order-info"><div class="order-title">${esc(o.title)}</div><div class="order-meta"><span>💰${o.budget}</span><span>⏰${o.time_ago}</span><span>${o.source}</span></div></div></div><div class="order-actions"><button class="order-btn primary" onclick="generateResponse(${o.id})">✨ Отклик</button><button class="order-btn secondary" onclick="checkScam(${o.id})">🕵️</button><button class="order-btn secondary" onclick="calcPrice(${o.id})">💰</button><button class="order-btn secondary" onclick="openUrl('${esc(o.url)}')">🔗</button></div></div>`;
+    }
+    
+    function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+    
+    async function turboParse(){
+        const btn=document.getElementById('turboBtn');
+        btn.disabled=true;
+        document.getElementById('turboText').textContent='ИЩЕМ...';
+        haptic('heavy');
+        try{
+            const r=await fetch(API+'/api/turbo-parse',{method:'POST'});
+            const d=await r.json();
+            toast('✅ Найдено '+d.new_orders+' заказов!');
             haptic('success');
-        } else {
-            document.getElementById('modalText').textContent = 'Платёж ещё обрабатывается.\n\nПопробуйте проверить через минуту.';
-            haptic('error');
-        }
-    } catch (e) {
-        document.getElementById('modalText').textContent = 'Ошибка проверки. Попробуйте позже.';
-    }
-}
-
-async function startTrial() {
-    haptic('medium');
-    
-    if (user && user.trial_used) {
-        toast('Пробный период уже использован', true);
-        return;
+            await loadOrders();
+        }catch(e){toast('Ошибка',true);haptic('error');}
+        document.getElementById('turboText').textContent='НАЙТИ ЗАКАЗЫ';
+        btn.disabled=false;
     }
     
-    try {
-        const r = await fetch(API + '/api/trial/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'pro', initData: tg.initData })
-        });
-        const d = await r.json();
-        
-        if (d.success) {
-            toast('🎉 ' + d.message);
+    async function generateResponse(id){
+        haptic('medium');
+        showModal('✨ AI-отклик','Генерирую отклик...');
+        document.getElementById('modalBtn').style.display='none';
+        try{
+            const r=await fetch(API+'/api/generate-response',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+            const d=await r.json();
+            if(d.error==='limit_reached'){
+                showModal('⚠️ Лимит исчерпан',d.message+'\n\nОформите PRO для безлимита!');
+                document.getElementById('modalBtn').style.display='block';
+                document.getElementById('modalBtn').textContent='💎 Оформить PRO';
+                document.getElementById('modalBtn').onclick=()=>{closeModal();showPage('profile');};
+            }else{
+                document.getElementById('modalText').textContent=d.response;
+                document.getElementById('modalBtn').style.display='block';
+                document.getElementById('modalBtn').textContent='📋 Скопировать';
+                document.getElementById('modalBtn').onclick=copyModalText;
+                if(d.xp_earned)toast('+'+d.xp_earned+' XP');
+            }
             haptic('success');
-            await loadUser(); // Перезагружаем данные
-        } else {
-            toast(d.message || 'Ошибка', true);
-        }
-    } catch (e) {
-        toast('Ошибка активации', true);
+        }catch(e){document.getElementById('modalText').textContent='Ошибка';}
     }
-}
-
-// Обновляем renderSubscriptions:
-function renderSubscriptions() {
-    const trialBtn = user && user.trial_used 
-        ? '' 
-        : `<button class="btn btn-success" onclick="startTrial()">🎁 Попробовать 3 дня бесплатно</button>`;
     
-    const proCard = `
-        <div class="sub-card recommended">
-            <div class="sub-header">
-                <div class="sub-name">PRO ⭐</div>
-                <div class="sub-price">${Config?.PRO_PRICE || 1490}₽<span>/мес</span></div>
-            </div>
-            <ul class="sub-features">
-                <li>✅ Безлимит AI-откликов</li>
-                <li>✅ Детектор мошенников</li>
-                <li>✅ Калькулятор цен</li>
-                <li>✅ CRM для сделок</li>
-                <li>✅ Аналитика рынка</li>
-                <li>✅ Режим Хищник</li>
-            </ul>
-            <button class="btn btn-pro" onclick="subscribe('pro')">💎 Оформить PRO</button>
-        </div>`;
+    async function checkScam(id){
+        if(!user?.is_pro&&!user?.is_admin){toast('Только для PRO',true);showPage('profile');return;}
+        haptic('medium');
+        document.getElementById('scamModal').classList.add('show');
+        document.getElementById('scamResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
+        try{
+            const r=await fetch(API+'/api/scam-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+            const d=await r.json();
+            if(d.error){document.getElementById('scamResult').innerHTML=`<p>${d.error}</p>`;return;}
+            document.getElementById('scamResult').innerHTML=`<div class="scam-indicator ${d.risk_level}" style="justify-content:center;font-size:14px;">${d.risk_emoji} ${d.risk_text} (${d.risk_score}%)</div><p style="margin:12px 0;font-size:13px;">${d.recommendation}</p>${d.warnings?.length?'<p style="font-size:12px;color:var(--danger);">⚠️ '+d.warnings.join('<br>⚠️ ')+'</p>':''}${d.green_signs?.length?'<p style="font-size:12px;color:var(--success);margin-top:8px;">✅ '+d.green_signs.join('<br>✅ ')+'</p>':''}`;
+        }catch(e){document.getElementById('scamResult').textContent='Ошибка';}
+    }
     
-    const basicCard = `
-        <div class="sub-card">
-            <div class="sub-header">
-                <div class="sub-name">Базовая</div>
-                <div class="sub-price">${Config?.BASIC_PRICE || 690}₽<span>/мес</span></div>
-            </div>
-            <ul class="sub-features">
-                <li>✅ Мониторинг всех бирж</li>
-                <li>✅ 50 AI-откликов/мес</li>
-                <li>✅ Уведомления</li>
-                <li>❌ Детектор мошенников</li>
-                <li>❌ CRM для сделок</li>
-            </ul>
-            <button class="btn btn-primary" onclick="subscribe('basic')">📦 Оформить</button>
-        </div>`;
+    async function calcPrice(id){
+        if(!user?.is_pro&&!user?.is_admin){toast('Только для PRO',true);showPage('profile');return;}
+        haptic('medium');
+        document.getElementById('priceModal').classList.add('show');
+        document.getElementById('priceResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
+        try{
+            const r=await fetch(API+'/api/price-calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+            const d=await r.json();
+            if(d.error){document.getElementById('priceResult').innerHTML=`<p>${d.error}</p>`;return;}
+            document.getElementById('priceResult').innerHTML=`<div class="analytics-card"><div class="analytics-title">Рекомендуемая цена</div><div class="analytics-value">${d.sweet_spot}</div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0;"><div class="analytics-card"><div class="analytics-title">Минимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_min?.toLocaleString()}₽</div></div><div class="analytics-card"><div class="analytics-title">Максимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_max?.toLocaleString()}₽</div></div></div><p style="font-size:12px;color:var(--text2);">Сложность: ${d.complexity_text}</p><p style="font-size:13px;margin-top:10px;">${d.tip}</p>`;
+        }catch(e){document.getElementById('priceResult').textContent='Ошибка';}
+    }
     
-    document.getElementById('subscriptionCards').innerHTML = trialBtn + proCard + basicCard;
-}
-
-// Обновляем subBanner в loadUser:
-// Заменяем часть где subBanner:
-
-if (user.is_admin) {
-    document.getElementById('subBanner').innerHTML = `
-        <div class="setting-item" style="background:linear-gradient(135deg,#9b59b6,#8e44ad);">
-            <div class="setting-info">
-                <div class="setting-icon">👑</div>
-                <div class="setting-text">
-                    <h4 style="color:white;">Админ</h4>
-                    <p style="color:rgba(255,255,255,0.8);">Полный доступ ко всем функциям</p>
-                </div>
-            </div>
-        </div>`;
-} else if (user.is_pro) {
-    document.getElementById('subBanner').innerHTML = `
-        <div class="setting-item" style="background:linear-gradient(135deg,var(--pro),#e67e22);">
-            <div class="setting-info">
-                <div class="setting-icon">⭐</div>
-                <div class="setting-text">
-                    <h4 style="color:white;">PRO подписка</h4>
-                    <p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p>
-                </div>
-            </div>
-        </div>`;
-} else if (user.has_subscription) {
-    document.getElementById('subBanner').innerHTML = `
-        <div class="setting-item" style="background:linear-gradient(135deg,var(--success),#00b894);">
-            <div class="setting-info">
-                <div class="setting-icon">📦</div>
-                <div class="setting-text">
-                    <h4 style="color:white;">Базовая подписка</h4>
-                    <p style="color:rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p>
-                </div>
-            </div>
-        </div>`;
-} else {
-    document.getElementById('subBanner').innerHTML = `
-        <div class="sub-card" style="background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;">
-            <h3 style="font-size:15px;margin-bottom:8px;">🚀 Получи полный доступ</h3>
-            <p style="font-size:12px;opacity:0.9;margin-bottom:12px;">AI-отклики, детектор кидал, CRM и многое другое</p>
-            ${user.trial_used ? '' : '<button class="btn" style="background:white;color:var(--accent);" onclick="startTrial()">🎁 3 дня бесплатно</button>'}
-        </div>`;
-}
-    </script>
+    async function loadStats(){
+        try{
+            const r=await fetch(API+'/api/stats',{headers:{'X-Telegram-Init-Data':tg.initData}});
+            const d=await r.json();
+            document.getElementById('marketOrders').textContent=d.market?.weekly_orders||0;
+            document.getElementById('marketBudget').textContent=(d.market?.avg_budget||0).toLocaleString()+'₽';
+            document.getElementById('userMonthly').textContent=(d.user?.monthly_earnings||0).toLocaleString()+' ₽';
+            document.getElementById('userTotal').textContent=(d.user?.total_earnings||0).toLocaleString()+' ₽';
+        }catch(e){}
+    }
+    
+    async function loadAchievements(){
+        try{
+            const r=await fetch(API+'/api/achievements',{headers:{'X-Telegram-Init-Data':tg.initData}});
+            const d=await r.json();
+            document.getElementById('levelCard').innerHTML=`<div class="level-header"><div class="level-name">${d.level.current.icon} ${d.level.current.name}</div><div class="level-xp">${d.level.xp} XP</div></div><div class="level-bar"><div class="level-fill" style="width:${d.level.progress_percent}%"></div></div>${d.level.next?`<div style="font-size:10px;margin-top:6px;opacity:0.8;">До ${d.level.next.name}: ${d.level.needed_xp-d.level.progress_xp} XP</div>`:''}`;
+            document.getElementById('achievementsGrid').innerHTML=d.achievements.slice(0,8).map(a=>`<div class="achievement ${a.unlocked?'unlocked':''}"><div class="achievement-icon">${a.icon}</div><div class="achievement-name">${a.name}</div></div>`).join('');
+        }catch(e){}
+    }
+    
+    async function loadDeals(){
+        if(!user?.is_pro&&!user?.is_admin){document.getElementById('dealsList').innerHTML='<div class="empty"><div class="empty-icon">🔒</div><div class="empty-text">CRM доступна в PRO</div><button class="btn btn-pro btn-sm" style="margin-top:12px;" onclick="showPage(\'profile\')">Оформить PRO</button></div>';return;}
+        try{
+            const r=await fetch(API+'/api/deals',{headers:{'X-Telegram-Init-Data':tg.initData}});
+            const deals=await r.json();
+            const active=deals.filter(d=>d.status!=='completed'&&d.status!=='cancelled').length;
+            const done=deals.filter(d=>d.status==='completed').length;
+            const total=deals.filter(d=>d.status==='completed').reduce((s,d)=>s+d.amount,0);
+            document.getElementById('dealActive').textContent=active;
+            document.getElementById('dealDone').textContent=done;
+            document.getElementById('dealTotal').textContent=total.toLocaleString()+'₽';
+            if(!deals.length){document.getElementById('dealsList').innerHTML='<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Добавь первую сделку</div></div>';return;}
+            document.getElementById('dealsList').innerHTML=deals.map(d=>`<div class="deal-card"><div class="deal-header"><div><div class="deal-title">${esc(d.title)}</div><div class="deal-meta">${d.client_name||'—'}</div></div><div class="deal-amount">${d.amount?.toLocaleString()||0}₽</div></div><span class="deal-status ${d.status}">${{lead:'Лид',negotiation:'Переговоры',in_progress:'В работе',review:'На проверке',completed:'Завершён',cancelled:'Отменён'}[d.status]||d.status}</span></div>`).join('');
+        }catch(e){}
+    }
+    
+    function showAddDealModal(){if(!user?.is_pro&&!user?.is_admin){toast('Только для PRO',true);return;}document.getElementById('dealModal').classList.add('show');}
+    function closeDealModal(e){if(!e||e.target.id==='dealModal')document.getElementById('dealModal').classList.remove('show');}
+    
+    async function createDeal(){
+        const title=document.getElementById('dealTitle').value;
+        const client=document.getElementById('dealClient').value;
+        const amount=parseInt(document.getElementById('dealAmount').value)||0;
+        if(!title){toast('Введи название',true);return;}
+        try{await fetch(API+'/api/deals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,client_name:client,amount,initData:tg.initData})});toast('✅ Сделка добавлена!');closeDealModal();loadDeals();}catch(e){toast('Ошибка',true);}
+    }
+    
+    function renderCategories(){document.getElementById('categoriesGrid').innerHTML=CATEGORIES.map(c=>`<div class="category-chip ${selectedCategories.includes(c.id)?'active':''}" onclick="toggleCat('${c.id}',this)">${c.name}</div>`).join('');}
+    function toggleCat(id,el){haptic('light');if(selectedCategories.includes(id)){selectedCategories=selectedCategories.filter(c=>c!==id);el.classList.remove('active');}else{selectedCategories.push(id);el.classList.add('active');}}
+    async function saveCategories(){try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({categories:selectedCategories,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}}
+    async function saveSetting(key,val){try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}}
+    
+    function copyModalText(){navigator.clipboard.writeText(document.getElementById('modalText').textContent).then(()=>{toast('📋 Скопировано!');haptic('success');closeModal();});}
+    function closeModal(e){if(!e||e.target.id==='modal'){document.getElementById('modal').classList.remove('show');document.getElementById('modalBtn').style.display='block';document.getElementById('modalBtn').textContent='📋 Скопировать';document.getElementById('modalBtn').onclick=copyModalText;}}
+    function closeScamModal(e){if(!e||e.target.id==='scamModal')document.getElementById('scamModal').classList.remove('show');}
+    function closePriceModal(e){if(!e||e.target.id==='priceModal')document.getElementById('priceModal').classList.remove('show');}
+    function openUrl(u){haptic('light');tg.openLink(u);}
+    function toast(m,err=false){const t=document.getElementById('toast');t.textContent=m;t.className='toast'+(err?' error':'');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
+</script>
 </body>
 </html>'''
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
