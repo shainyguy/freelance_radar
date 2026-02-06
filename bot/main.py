@@ -6,6 +6,7 @@ import json
 import hashlib
 import hmac
 from urllib.parse import parse_qsl
+from datetime import datetime, timezone
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -16,14 +17,16 @@ from database.db import Database, init_db
 
 from bot.handlers import start, categories, subscription, generate_response, profile, orders
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+from services.scam_detector import scam_detector
+from services.price_calculator import price_calculator
+from services.achievements import achievements
+from services.market_analytics import market_analytics
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-# ===== TELEGRAM AUTH =====
+# ============ AUTH ============
 
 def verify_telegram_data(init_data: str) -> dict:
     if not init_data:
@@ -36,9 +39,9 @@ def verify_telegram_data(init_data: str) -> dict:
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         if calculated_hash == check_hash:
             return json.loads(parsed.get('user', '{}'))
-        return None
     except:
-        return None
+        pass
+    return None
 
 
 async def get_user_from_request(request: web.Request):
@@ -52,54 +55,60 @@ async def get_user_from_request(request: web.Request):
     
     user_data = verify_telegram_data(init_data)
     if user_data:
-        return await Database.get_or_create_user(
+        user = await Database.get_or_create_user(
             telegram_id=user_data.get('id'),
             username=user_data.get('username'),
             full_name=f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
         )
+        await Database.update_user_activity(user_data.get('id'))
+        return user
     return None
 
 
-# ===== API =====
+# ============ API HANDLERS ============
 
 async def api_user(request: web.Request) -> web.Response:
     user = await get_user_from_request(request)
     if not user:
         return web.json_response({'id': 0, 'is_new': True})
     
-    from datetime import datetime
     days_left = 0
     if user.subscription_end:
         days_left = max(0, (user.subscription_end - datetime.utcnow()).days)
     
+    ai_left = await Database.get_ai_responses_left(user.telegram_id)
+    level_info = achievements.get_level_info(user.xp_points or 0)
+    
     return web.json_response({
         'id': user.id,
         'telegram_id': user.telegram_id,
-        'username': user.username or 'Аноним',
+        'username': user.username or '',
         'full_name': user.full_name or 'Пользователь',
+        'subscription_type': user.subscription_type or 'free',
         'has_subscription': user.has_active_subscription(),
+        'is_pro': user.subscription_type == 'pro' and user.has_active_subscription(),
         'subscription_days': days_left,
+        'ai_responses_left': ai_left,
         'categories': user.categories or [],
         'min_budget': user.min_budget or 0,
-        'is_active': user.is_active,
-        'created_at': user.created_at.isoformat() if user.created_at else None
+        'predator_mode': user.predator_mode or False,
+        'xp': user.xp_points or 0,
+        'level': level_info['current'],
+        'level_progress': level_info['progress_percent'],
+        'achievements': user.achievements or [],
+        'streak_days': user.streak_days or 0,
+        'total_earnings': user.total_earnings or 0,
+        'orders_viewed': user.orders_viewed or 0,
+        'responses_sent': user.responses_sent or 0,
+        'deals_completed': user.deals_completed or 0,
+        'referral_code': user.referral_code,
     })
 
 
 async def api_orders(request: web.Request) -> web.Response:
     category = request.query.get('category', 'all')
     
-    from database.db import async_session
-    from database.models import Order
-    from sqlalchemy import select, desc
-    from datetime import datetime, timezone
-    
-    async with async_session() as session:
-        query = select(Order).order_by(desc(Order.created_at)).limit(50)
-        if category != 'all':
-            query = query.where(Order.category == category)
-        result = await session.execute(query)
-        db_orders = result.scalars().all()
+    db_orders = await Database.get_orders(category if category != 'all' else None, limit=50)
     
     orders_data = []
     for order in db_orders:
@@ -129,33 +138,11 @@ async def api_orders(request: web.Request) -> web.Response:
             'category': order.category,
             'time_ago': time_ago,
             'ai_score': score,
-            'hot': (order.budget_value or 0) >= 30000
+            'hot': (order.budget_value or 0) >= 30000,
+            'scam_score': order.scam_score or 0,
         })
     
     return web.json_response(orders_data)
-
-
-async def api_stats(request: web.Request) -> web.Response:
-    from database.db import async_session
-    from database.models import Order
-    from sqlalchemy import select, func
-    
-    async with async_session() as session:
-        result = await session.execute(select(func.count(Order.id)))
-        total = result.scalar() or 0
-        
-        # Считаем по источникам
-        sources_result = await session.execute(
-            select(Order.source, func.count(Order.id)).group_by(Order.source)
-        )
-        sources = {row[0]: row[1] for row in sources_result}
-    
-    return web.json_response({
-        'total_orders': total,
-        'by_source': sources,
-        'responses': 0,
-        'earnings': 0
-    })
 
 
 async def api_turbo_parse(request: web.Request) -> web.Response:
@@ -169,6 +156,16 @@ async def api_turbo_parse(request: web.Request) -> web.Response:
             try:
                 found = await parser.parse_orders(category)
                 for order_data in found:
+                    # Анализируем на скам
+                    scam_result = await scam_detector.analyze(
+                        order_data.get('title', ''),
+                        order_data.get('description', ''),
+                        order_data.get('budget', ''),
+                        order_data.get('budget_value', 0)
+                    )
+                    order_data['scam_score'] = scam_result['risk_score']
+                    order_data['scam_warnings'] = scam_result['warnings']
+                    
                     order = await Database.save_order(order_data)
                     if order:
                         new_count += 1
@@ -183,38 +180,261 @@ async def api_turbo_parse(request: web.Request) -> web.Response:
 
 
 async def api_generate_response(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    
     try:
         body = await request.json()
         order_id = body.get('order_id')
         order = await Database.get_order_by_id(order_id)
         
         if not order:
-            return web.json_response({'error': 'Not found'}, status=404)
+            return web.json_response({'error': 'Order not found'}, status=404)
+        
+        # Проверяем лимит AI
+        if user:
+            can_use = await Database.use_ai_response(user.telegram_id)
+            if not can_use:
+                left = await Database.get_ai_responses_left(user.telegram_id)
+                return web.json_response({
+                    'error': 'limit_reached',
+                    'message': f'Лимит AI-откликов исчерпан. Осталось: {left}',
+                    'upgrade_needed': True
+                }, status=403)
+            
+            # Добавляем XP
+            xp_result = await Database.add_xp(user.telegram_id, 5)
         
         from services.gigachat import gigachat_service
         response = await gigachat_service.generate_response(order.title, order.description or '')
-        return web.json_response({'response': response})
+        
+        return web.json_response({'response': response, 'xp_earned': 5})
     except Exception as e:
+        logger.error(f"Generate error: {e}")
         return web.json_response({
             'response': "Здравствуйте!\n\nЗаинтересовал ваш проект. Имею опыт в данной области.\n\nГотов обсудить детали! 🚀"
         })
 
 
-async def api_save_categories(request: web.Request) -> web.Response:
+async def api_scam_check(request: web.Request) -> web.Response:
+    """Проверка заказа на мошенничество"""
+    user = await get_user_from_request(request)
+    
+    # Для PRO
+    if not user or (user.subscription_type != 'pro' and user.has_active_subscription()):
+        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    
+    try:
+        body = await request.json()
+        order_id = body.get('order_id')
+        
+        order = await Database.get_order_by_id(order_id)
+        if not order:
+            return web.json_response({'error': 'Not found'}, status=404)
+        
+        result = await scam_detector.analyze(
+            order.title,
+            order.description or '',
+            order.budget or '',
+            order.budget_value or 0
+        )
+        
+        # Сохраняем результат
+        await Database.update_order_scam(order_id, result['risk_score'], result['warnings'])
+        
+        # XP за использование
+        await Database.add_xp(user.telegram_id, 2)
+        
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_price_calculate(request: web.Request) -> web.Response:
+    """Калькулятор цены"""
+    user = await get_user_from_request(request)
+    
+    if not user or (user.subscription_type != 'pro' and user.has_active_subscription()):
+        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    
+    try:
+        body = await request.json()
+        order_id = body.get('order_id')
+        
+        order = await Database.get_order_by_id(order_id)
+        if not order:
+            return web.json_response({'error': 'Not found'}, status=404)
+        
+        result = await price_calculator.calculate(
+            order.title,
+            order.description or '',
+            order.category or 'python',
+            order.budget_value or 0
+        )
+        
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_stats(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    
+    market = await Database.get_market_stats()
+    
+    user_stats = {}
+    if user:
+        earnings = await Database.get_user_earnings_stats(user.id)
+        user_stats = {
+            'monthly_earnings': earnings['monthly'],
+            'weekly_earnings': earnings['weekly'],
+            'total_earnings': earnings['total'],
+        }
+    
+    return web.json_response({
+        'market': market,
+        'user': user_stats
+    })
+
+
+async def api_achievements(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    
+    unlocked = user.achievements if user else []
+    all_achievements = achievements.get_all_achievements(unlocked)
+    level_info = achievements.get_level_info(user.xp_points if user else 0)
+    
+    return web.json_response({
+        'achievements': all_achievements,
+        'level': level_info,
+        'unlocked_count': len(unlocked),
+        'total_count': len(all_achievements)
+    })
+
+
+# ============ DEALS API ============
+
+async def api_deals_list(request: web.Request) -> web.Response:
     user = await get_user_from_request(request)
     if not user:
         return web.json_response({'error': 'Unauthorized'}, status=401)
     
-    body = await request.json()
-    categories = body.get('categories', [])
-    await Database.update_user_categories(user.telegram_id, categories)
-    return web.json_response({'success': True})
+    status = request.query.get('status')
+    deals = await Database.get_user_deals(user.id, status)
+    
+    return web.json_response([{
+        'id': d.id,
+        'title': d.title,
+        'client_name': d.client_name,
+        'amount': d.amount,
+        'paid_amount': d.paid_amount,
+        'status': d.status,
+        'deadline': d.deadline.isoformat() if d.deadline else None,
+        'created_at': d.created_at.isoformat(),
+    } for d in deals])
 
 
-# ===== WEB HANDLERS =====
+async def api_deals_create(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    if not user.is_pro():
+        return web.json_response({'error': 'PRO subscription required'}, status=403)
+    
+    try:
+        body = await request.json()
+        deal = await Database.create_deal(
+            user_id=user.id,
+            title=body.get('title', 'Новая сделка'),
+            client_name=body.get('client_name'),
+            client_contact=body.get('client_contact'),
+            amount=body.get('amount', 0),
+            status=body.get('status', 'lead'),
+            notes=body.get('notes')
+        )
+        
+        # Достижение за первую сделку
+        if not 'first_deal' in (user.achievements or []):
+            await Database.unlock_achievement(user.telegram_id, 'first_deal')
+            await Database.add_xp(user.telegram_id, 50)
+        
+        return web.json_response({'success': True, 'deal_id': deal.id})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_deals_update(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        deal_id = body.pop('deal_id', None)
+        
+        if not deal_id:
+            return web.json_response({'error': 'deal_id required'}, status=400)
+        
+        deal = await Database.update_deal(deal_id, **body)
+        
+        # Если завершена - добавляем доход
+        if body.get('status') == 'completed' and deal:
+            if deal.amount:
+                await Database.add_income(user.id, deal.amount, deal.id, deal.title)
+            await Database.increment_stat(user.telegram_id, 'deals_completed')
+            await Database.add_xp(user.telegram_id, 25)
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_income_add(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        await Database.add_income(
+            user_id=user.id,
+            amount=body.get('amount', 0),
+            description=body.get('description'),
+            source=body.get('source', 'freelance')
+        )
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def api_save_settings(request: web.Request) -> web.Response:
+    user = await get_user_from_request(request)
+    if not user:
+        return web.json_response({'error': 'Unauthorized'}, status=401)
+    
+    try:
+        body = await request.json()
+        
+        allowed = ['categories', 'min_budget', 'predator_mode', 'predator_min_budget', 'is_active']
+        settings = {k: v for k, v in body.items() if k in allowed}
+        
+        await Database.update_user_settings(user.telegram_id, **settings)
+        
+        # Достижение за режим хищник
+        if body.get('predator_mode') and 'hunter' not in (user.achievements or []):
+            await Database.unlock_achievement(user.telegram_id, 'hunter')
+            await Database.add_xp(user.telegram_id, 20)
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+# ============ WEB HANDLERS ============
 
 async def handle_index(request):
-    return web.Response(text="Freelance Radar Bot is running!")
+    return web.Response(text="Freelance Radar Bot is running! 🚀")
 
 async def handle_health(request):
     return web.Response(text="OK")
@@ -225,598 +445,48 @@ async def handle_webapp(request):
     return web.Response(text=get_webapp_html(api_base), content_type='text/html', charset='utf-8')
 
 
+# ============ MINI APP HTML ============
+
 def get_webapp_html(api_base: str) -> str:
-    return '''<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Freelance Radar</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        :root {
-            --bg: #0a0a0f; --bg2: #12121a; --card: rgba(255,255,255,0.05);
-            --border: rgba(255,255,255,0.1); --text: #fff; --text2: #888;
-            --accent: #6c5ce7; --accent2: #a29bfe; --success: #00d26a;
-            --warning: #ffc107; --danger: #ff4757;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg);
-               color: var(--text); min-height: 100vh; padding-bottom: 80px; }
-        
-        /* Header */
-        .header { background: var(--bg2); padding: 16px; text-align: center; border-bottom: 1px solid var(--border); }
-        .logo { font-size: 32px; }
-        .title { font-size: 18px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2));
-                 -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        
-        /* Tabs */
-        .tabs { display: flex; background: var(--bg2); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
-        .tab { flex: 1; padding: 14px 8px; text-align: center; font-size: 13px; font-weight: 500; color: var(--text2);
-               border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.2s; }
-        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-        .tab-icon { font-size: 18px; display: block; margin-bottom: 4px; }
-        
-        /* Pages */
-        .page { display: none; padding: 16px; }
-        .page.active { display: block; }
-        
-        /* Stats */
-        .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
-        .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; text-align: center; }
-        .stat-value { font-size: 24px; font-weight: 700; color: var(--accent); }
-        .stat-label { font-size: 11px; color: var(--text2); margin-top: 4px; }
-        
-        /* Button */
-        .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 15px; font-weight: 600;
-               cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 16px; }
-        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: white; }
-        .btn-secondary { background: var(--card); color: white; border: 1px solid var(--border); }
-        .btn:disabled { opacity: 0.6; }
-        .btn:active { transform: scale(0.98); }
-        
-        /* Section */
-        .section-title { font-size: 15px; font-weight: 600; margin: 16px 0 12px; display: flex; align-items: center; gap: 8px; }
-        .badge { background: var(--accent); padding: 2px 8px; border-radius: 10px; font-size: 11px; }
-        
-        /* Order Card */
-        .order-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-                      padding: 14px; margin-bottom: 10px; position: relative; }
-        .order-card.hot::after { content: '🔥'; position: absolute; top: 10px; right: 10px; }
-        .order-header { display: flex; gap: 10px; margin-bottom: 10px; }
-        .order-source { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center;
-                        justify-content: center; font-size: 16px; font-weight: 600; flex-shrink: 0; }
-        .order-source.hh { background: #d63031; }
-        .order-source.kwork { background: #00b894; }
-        .order-source.fl { background: #0984e3; }
-        .order-source.freelance { background: #6c5ce7; }
-        .order-info { flex: 1; min-width: 0; }
-        .order-title { font-size: 13px; font-weight: 600; line-height: 1.3; margin-bottom: 4px;
-                       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .order-meta { display: flex; gap: 10px; font-size: 11px; color: var(--text2); flex-wrap: wrap; }
-        .order-actions { display: flex; gap: 8px; margin-top: 10px; }
-        .order-btn { flex: 1; padding: 10px; border: none; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
-        .order-btn.primary { background: var(--accent); color: white; }
-        .order-btn.secondary { background: var(--card); color: white; border: 1px solid var(--border); }
-        
-        /* Profile */
-        .profile-header { text-align: center; padding: 20px 0; }
-        .avatar { width: 80px; height: 80px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent2));
-                  display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 12px; }
-        .profile-name { font-size: 18px; font-weight: 600; }
-        .profile-username { font-size: 13px; color: var(--text2); }
-        
-        .profile-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 20px 0; }
-        .profile-stat { background: var(--card); border-radius: 12px; padding: 12px; text-align: center; }
-        .profile-stat-value { font-size: 20px; font-weight: 700; color: var(--accent); }
-        .profile-stat-label { font-size: 10px; color: var(--text2); margin-top: 2px; }
-        
-        .setting-item { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 8px;
-                        display: flex; align-items: center; justify-content: space-between; }
-        .setting-info { display: flex; align-items: center; gap: 12px; }
-        .setting-icon { font-size: 20px; }
-        .setting-text h4 { font-size: 14px; font-weight: 500; }
-        .setting-text p { font-size: 11px; color: var(--text2); }
-        
-        /* Categories */
-        .categories-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-        .category-chip { padding: 10px 16px; background: var(--card); border: 1px solid var(--border);
-                         border-radius: 20px; font-size: 13px; cursor: pointer; transition: all 0.2s; }
-        .category-chip.active { background: var(--accent); border-color: var(--accent); }
-        
-        /* Empty State */
-        .empty-state { text-align: center; padding: 40px 20px; }
-        .empty-icon { font-size: 48px; margin-bottom: 12px; }
-        .empty-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
-        .empty-text { font-size: 13px; color: var(--text2); }
-        
-        /* Loading */
-        .loading { text-align: center; padding: 30px; }
-        .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border);
-                   border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        
-        /* Toast */
-        .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(100px);
-                 background: var(--success); color: white; padding: 12px 20px; border-radius: 10px;
-                 font-size: 13px; opacity: 0; transition: all 0.3s; z-index: 1000; }
-        .toast.error { background: var(--danger); }
-        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-        
-        /* Modal */
-        .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8);
-                 display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
-        .modal.show { display: flex; }
-        .modal-content { background: var(--bg2); border-radius: 16px; padding: 20px; width: 100%; max-height: 80vh; overflow-y: auto; }
-        .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
-        .modal-text { font-size: 14px; line-height: 1.5; white-space: pre-wrap; margin-bottom: 16px;
-                      background: var(--card); padding: 12px; border-radius: 10px; }
-        .modal-btn { width: 100%; padding: 14px; background: var(--success); border: none; border-radius: 10px;
-                     color: white; font-size: 14px; font-weight: 600; cursor: pointer; }
-        
-        /* Subscription Banner */
-        .sub-banner { background: linear-gradient(135deg, var(--accent), var(--accent2)); border-radius: 14px;
-                      padding: 16px; margin-bottom: 16px; position: relative; overflow: hidden; }
-        .sub-banner h3 { font-size: 15px; margin-bottom: 4px; }
-        .sub-banner p { font-size: 12px; opacity: 0.9; }
-        .sub-price { font-size: 24px; font-weight: 700; margin: 8px 0; }
-    </style>
-</head>
-<body>
-    <!-- Header -->
-    <div class="header">
-        <div class="logo">📡</div>
-        <div class="title">Freelance Radar</div>
-    </div>
-    
-    <!-- Tabs -->
-    <div class="tabs">
-        <div class="tab active" onclick="showPage('orders')">
-            <span class="tab-icon">📋</span>Заказы
-        </div>
-        <div class="tab" onclick="showPage('search')">
-            <span class="tab-icon">🔍</span>Поиск
-        </div>
-        <div class="tab" onclick="showPage('profile')">
-            <span class="tab-icon">👤</span>Профиль
-        </div>
-    </div>
-    
-    <!-- Orders Page -->
-    <div class="page active" id="page-orders">
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-value" id="totalOrders">—</div>
-                <div class="stat-label">Всего заказов</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value" id="newOrders">—</div>
-                <div class="stat-label">Новых сегодня</div>
-            </div>
-        </div>
-        
-        <button class="btn btn-primary" id="turboBtn" onclick="turboParse()">
-            <span id="turboIcon">⚡</span>
-            <span id="turboText">НАЙТИ ЗАКАЗЫ</span>
-        </button>
-        
-        <div class="section-title">
-            <span>📋 Последние заказы</span>
-            <span class="badge" id="ordersCount">0</span>
-        </div>
-        
-        <div id="ordersList"></div>
-    </div>
-    
-    <!-- Search Page -->
-    <div class="page" id="page-search">
-        <div class="section-title">🎯 Категории</div>
-        <p style="font-size: 12px; color: var(--text2); margin-bottom: 12px;">Выбери категории для поиска заказов</p>
-        
-        <div class="categories-grid" id="categoriesGrid"></div>
-        
-        <button class="btn btn-primary" style="margin-top: 20px;" onclick="saveCategories()">
-            💾 Сохранить
-        </button>
-        
-        <div class="section-title" style="margin-top: 24px;">📊 Статистика по биржам</div>
-        <div id="sourcesStats"></div>
-    </div>
-    
-    <!-- Profile Page -->
-    <div class="page" id="page-profile">
-        <div class="profile-header">
-            <div class="avatar" id="userAvatar">👤</div>
-            <div class="profile-name" id="userName">Загрузка...</div>
-            <div class="profile-username" id="userUsername">@...</div>
-        </div>
-        
-        <div class="profile-stats">
-            <div class="profile-stat">
-                <div class="profile-stat-value" id="profileOrders">0</div>
-                <div class="profile-stat-label">Просмотрено</div>
-            </div>
-            <div class="profile-stat">
-                <div class="profile-stat-value" id="profileResponses">0</div>
-                <div class="profile-stat-label">Откликов</div>
-            </div>
-            <div class="profile-stat">
-                <div class="profile-stat-value" id="profileEarnings">0</div>
-                <div class="profile-stat-label">Заработано</div>
-            </div>
-        </div>
-        
-        <div id="subBanner"></div>
-        
-        <div class="section-title">⚙️ Настройки</div>
-        
-        <div class="setting-item">
-            <div class="setting-info">
-                <div class="setting-icon">🔔</div>
-                <div class="setting-text">
-                    <h4>Уведомления</h4>
-                    <p>Получать новые заказы</p>
-                </div>
-            </div>
-            <span style="color: var(--success);">Вкл</span>
-        </div>
-        
-        <div class="setting-item">
-            <div class="setting-info">
-                <div class="setting-icon">💰</div>
-                <div class="setting-text">
-                    <h4>Мин. бюджет</h4>
-                    <p id="minBudgetText">Не установлен</p>
-                </div>
-            </div>
-        </div>
-        
-        <div class="setting-item">
-            <div class="setting-info">
-                <div class="setting-icon">🎯</div>
-                <div class="setting-text">
-                    <h4>Категории</h4>
-                    <p id="categoriesText">Не выбраны</p>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Toast -->
-    <div class="toast" id="toast"></div>
-    
-    <!-- Modal -->
-    <div class="modal" id="modal" onclick="closeModal(event)">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <div class="modal-title">✨ AI-отклик</div>
-            <div class="modal-text" id="modalText">Загрузка...</div>
-            <button class="modal-btn" onclick="copyText()">📋 Скопировать</button>
-        </div>
-    </div>
-    
-    <script>
-        const API = "''' + api_base + '''";
-        const tg = window.Telegram.WebApp;
-        
-        let orders = [];
-        let user = null;
-        let selectedCategories = [];
-        
-        const CATEGORIES = [
-            { id: 'python', name: '🐍 Python', icon: '🐍' },
-            { id: 'design', name: '🎨 Дизайн', icon: '🎨' },
-            { id: 'copywriting', name: '✍️ Тексты', icon: '✍️' },
-            { id: 'marketing', name: '📈 Маркетинг', icon: '📈' },
-        ];
-        
-        // Init
-        tg.ready();
-        tg.expand();
-        
-        document.addEventListener('DOMContentLoaded', async () => {
-            await loadUser();
-            await loadOrders();
-            await loadStats();
-            renderCategories();
-            haptic('light');
-        });
-        
-        function haptic(type) {
-            if (!tg.HapticFeedback) return;
-            if (type === 'success') tg.HapticFeedback.notificationOccurred('success');
-            else if (type === 'error') tg.HapticFeedback.notificationOccurred('error');
-            else tg.HapticFeedback.impactOccurred(type);
-        }
-        
-        function showPage(name) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.getElementById('page-' + name).classList.add('active');
-            event.currentTarget.classList.add('active');
-            haptic('light');
-        }
-        
-        async function loadUser() {
-            try {
-                const res = await fetch(API + '/api/user', {
-                    headers: { 'X-Telegram-Init-Data': tg.initData }
-                });
-                user = await res.json();
-                
-                document.getElementById('userName').textContent = user.full_name || 'Пользователь';
-                document.getElementById('userUsername').textContent = user.username ? '@' + user.username : '';
-                
-                if (user.min_budget) {
-                    document.getElementById('minBudgetText').textContent = user.min_budget.toLocaleString() + ' ₽';
-                }
-                
-                if (user.categories && user.categories.length) {
-                    selectedCategories = user.categories;
-                    document.getElementById('categoriesText').textContent = user.categories.join(', ');
-                }
-                
-                // Subscription banner
-                if (user.has_subscription) {
-                    document.getElementById('subBanner').innerHTML = `
-                        <div class="setting-item" style="background: linear-gradient(135deg, var(--success), #00b894);">
-                            <div class="setting-info">
-                                <div class="setting-icon">✅</div>
-                                <div class="setting-text">
-                                    <h4 style="color: white;">Подписка активна</h4>
-                                    <p style="color: rgba(255,255,255,0.8);">Осталось ${user.subscription_days} дней</p>
-                                </div>
-                            </div>
-                        </div>`;
-                } else {
-                    document.getElementById('subBanner').innerHTML = `
-                        <div class="sub-banner">
-                            <h3>🚀 Получи полный доступ</h3>
-                            <p>AI-отклики, уведомления, все биржи</p>
-                            <div class="sub-price">690 ₽/мес</div>
-                            <button class="btn btn-secondary" style="background: white; color: var(--accent);" 
-                                    onclick="tg.openLink('https://t.me/FreelanceRadarBot')">
-                                Попробовать 3 дня бесплатно
-                            </button>
-                        </div>`;
-                }
-            } catch (e) {
-                console.error('User error:', e);
-            }
-        }
-        
-        async function loadStats() {
-            try {
-                const res = await fetch(API + '/api/stats');
-                const data = await res.json();
-                
-                document.getElementById('totalOrders').textContent = data.total_orders || 0;
-                document.getElementById('newOrders').textContent = Math.min(data.total_orders || 0, 50);
-                
-                // Sources stats
-                if (data.by_source) {
-                    const html = Object.entries(data.by_source).map(([source, count]) => `
-                        <div class="setting-item">
-                            <div class="setting-info">
-                                <div class="setting-icon">${getSourceEmoji(source)}</div>
-                                <div class="setting-text">
-                                    <h4>${source}</h4>
-                                    <p>${count} заказов</p>
-                                </div>
-                            </div>
-                        </div>
-                    `).join('');
-                    document.getElementById('sourcesStats').innerHTML = html || '<p style="color: var(--text2);">Нет данных</p>';
-                }
-            } catch (e) {
-                console.error('Stats error:', e);
-            }
-        }
-        
-        async function loadOrders() {
-            const list = document.getElementById('ordersList');
-            list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-            
-            try {
-                const res = await fetch(API + '/api/orders');
-                orders = await res.json();
-                
-                document.getElementById('ordersCount').textContent = orders.length;
-                
-                if (!orders.length) {
-                    list.innerHTML = `
-                        <div class="empty-state">
-                            <div class="empty-icon">🔍</div>
-                            <div class="empty-title">Пока нет заказов</div>
-                            <div class="empty-text">Нажми «Найти заказы» для поиска</div>
-                        </div>`;
-                    return;
-                }
-                
-                list.innerHTML = orders.map(o => createOrderCard(o)).join('');
-            } catch (e) {
-                list.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-icon">⚠️</div>
-                        <div class="empty-title">Ошибка загрузки</div>
-                    </div>`;
-            }
-        }
-        
-        function getSourceEmoji(source) {
-            const map = { hh: '🔴', kwork: '🟢', 'fl.ru': '🔵', 'freelance.ru': '🟣' };
-            return map[source] || '📋';
-        }
-        
-        function getSourceClass(source) {
-            if (source.includes('kwork')) return 'kwork';
-            if (source.includes('fl')) return 'fl';
-            if (source.includes('hh')) return 'hh';
-            return 'freelance';
-        }
-        
-        function createOrderCard(o) {
-            return `
-                <div class="order-card ${o.hot ? 'hot' : ''}">
-                    <div class="order-header">
-                        <div class="order-source ${getSourceClass(o.source)}">${getSourceEmoji(o.source)}</div>
-                        <div class="order-info">
-                            <div class="order-title">${escapeHtml(o.title)}</div>
-                            <div class="order-meta">
-                                <span>💰 ${o.budget}</span>
-                                <span>⏰ ${o.time_ago}</span>
-                                <span>📍 ${o.source}</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="order-actions">
-                        <button class="order-btn primary" onclick="generateResponse(${o.id})">✨ Отклик</button>
-                        <button class="order-btn secondary" onclick="openOrder('${escapeHtml(o.url)}')">🔗 Открыть</button>
-                    </div>
-                </div>`;
-        }
-        
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        function renderCategories() {
-            const grid = document.getElementById('categoriesGrid');
-            grid.innerHTML = CATEGORIES.map(c => `
-                <div class="category-chip ${selectedCategories.includes(c.id) ? 'active' : ''}" 
-                     onclick="toggleCategory('${c.id}', this)">
-                    ${c.name}
-                </div>
-            `).join('');
-        }
-        
-        function toggleCategory(id, el) {
-            haptic('light');
-            if (selectedCategories.includes(id)) {
-                selectedCategories = selectedCategories.filter(c => c !== id);
-                el.classList.remove('active');
-            } else {
-                selectedCategories.push(id);
-                el.classList.add('active');
-            }
-        }
-        
-        async function saveCategories() {
-            try {
-                await fetch(API + '/api/save-categories', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ categories: selectedCategories, initData: tg.initData })
-                });
-                showToast('✅ Категории сохранены!');
-                haptic('success');
-            } catch (e) {
-                showToast('❌ Ошибка сохранения', true);
-            }
-        }
-        
-        async function turboParse() {
-            const btn = document.getElementById('turboBtn');
-            const icon = document.getElementById('turboIcon');
-            const text = document.getElementById('turboText');
-            
-            btn.disabled = true;
-            icon.textContent = '🔄';
-            text.textContent = 'ИЩЕМ...';
-            haptic('heavy');
-            
-            try {
-                const res = await fetch(API + '/api/turbo-parse', { method: 'POST' });
-                const data = await res.json();
-                
-                showToast(`✅ Найдено ${data.new_orders} заказов!`);
-                haptic('success');
-                
-                await loadStats();
-                await loadOrders();
-            } catch (e) {
-                showToast('❌ Ошибка поиска', true);
-                haptic('error');
-            }
-            
-            icon.textContent = '⚡';
-            text.textContent = 'НАЙТИ ЗАКАЗЫ';
-            btn.disabled = false;
-        }
-        
-        async function generateResponse(orderId) {
-            haptic('medium');
-            
-            const modal = document.getElementById('modal');
-            const modalText = document.getElementById('modalText');
-            
-            modal.classList.add('show');
-            modalText.textContent = '✨ Генерирую отклик...';
-            
-            try {
-                const res = await fetch(API + '/api/generate-response', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_id: orderId })
-                });
-                const data = await res.json();
-                modalText.textContent = data.response;
-                haptic('success');
-            } catch (e) {
-                modalText.textContent = 'Ошибка генерации';
-                haptic('error');
-            }
-        }
-        
-        function copyText() {
-            const text = document.getElementById('modalText').textContent;
-            navigator.clipboard.writeText(text).then(() => {
-                showToast('📋 Скопировано!');
-                haptic('success');
-                closeModal();
-            });
-        }
-        
-        function closeModal(e) {
-            if (!e || e.target.classList.contains('modal')) {
-                document.getElementById('modal').classList.remove('show');
-            }
-        }
-        
-        function openOrder(url) {
-            haptic('light');
-            tg.openLink(url);
-        }
-        
-        function showToast(msg, isError = false) {
-            const toast = document.getElementById('toast');
-            toast.textContent = msg;
-            toast.className = 'toast' + (isError ? ' error' : '');
-            toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 3000);
-        }
-    </script>
-</body>
-</html>'''
+    # Большой HTML - в отдельном сообщении
+    return WEBAPP_HTML.replace('{{API_BASE}}', api_base)
 
 
-# ===== APP =====
+# ============ CREATE APP ============
 
 def create_web_app():
     app = web.Application()
+    
+    # Pages
     app.router.add_get('/', handle_index)
     app.router.add_get('/health', handle_health)
     app.router.add_get('/webapp', handle_webapp)
+    
+    # User API
     app.router.add_get('/api/user', api_user)
+    app.router.add_post('/api/settings', api_save_settings)
+    
+    # Orders API
     app.router.add_get('/api/orders', api_orders)
-    app.router.add_get('/api/stats', api_stats)
     app.router.add_post('/api/turbo-parse', api_turbo_parse)
     app.router.add_post('/api/generate-response', api_generate_response)
-    app.router.add_post('/api/save-categories', api_save_categories)
+    app.router.add_post('/api/scam-check', api_scam_check)
+    app.router.add_post('/api/price-calculate', api_price_calculate)
+    
+    # Stats & Achievements
+    app.router.add_get('/api/stats', api_stats)
+    app.router.add_get('/api/achievements', api_achievements)
+    
+    # CRM API
+    app.router.add_get('/api/deals', api_deals_list)
+    app.router.add_post('/api/deals', api_deals_create)
+    app.router.add_put('/api/deals', api_deals_update)
+    app.router.add_post('/api/income', api_income_add)
+    
     return app
 
+
+# ============ MAIN ============
 
 async def main():
     await init_db()
@@ -840,6 +510,7 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(f"https://{domain}/webhook")
         logger.info(f"Webhook: https://{domain}/webhook")
+        logger.info(f"WebApp: https://{domain}/webapp")
         
         webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
         webhook_handler.register(app, path='/webhook')
@@ -856,6 +527,605 @@ async def main():
         await web.TCPSite(runner, '0.0.0.0', Config.WEBAPP_PORT).start()
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
+
+
+# ============ WEBAPP HTML ============
+
+WEBAPP_HTML = '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Freelance Radar</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root { --bg:#0a0a0f; --bg2:#12121a; --card:rgba(255,255,255,0.05); --border:rgba(255,255,255,0.1);
+                --text:#fff; --text2:#888; --accent:#6c5ce7; --accent2:#a29bfe; --success:#00d26a;
+                --warning:#ffc107; --danger:#ff4757; --pro:#f39c12; }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+        body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding-bottom:70px; }
+        
+        .header { background:var(--bg2); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); position:sticky; top:0; z-index:100; }
+        .header-left { display:flex; align-items:center; gap:10px; }
+        .logo { font-size:24px; }
+        .title { font-size:16px; font-weight:700; background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+        .pro-badge { background:linear-gradient(135deg,var(--pro),#e67e22); color:#fff; font-size:10px; font-weight:700; padding:3px 8px; border-radius:10px; }
+        .level-badge { background:var(--card); border:1px solid var(--border); padding:3px 8px; border-radius:10px; font-size:11px; display:flex; align-items:center; gap:4px; }
+        
+        .tabs { display:flex; background:var(--bg2); border-bottom:1px solid var(--border); overflow-x:auto; }
+        .tab { flex:1; min-width:60px; padding:10px 8px; text-align:center; font-size:11px; color:var(--text2); border-bottom:2px solid transparent; cursor:pointer; white-space:nowrap; }
+        .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+        .tab-icon { font-size:18px; display:block; margin-bottom:2px; }
+        
+        .page { display:none; padding:12px; }
+        .page.active { display:block; }
+        
+        .stats-row { display:flex; gap:8px; margin-bottom:12px; overflow-x:auto; padding-bottom:4px; }
+        .stat-mini { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px 12px; text-align:center; min-width:80px; flex-shrink:0; }
+        .stat-mini-value { font-size:18px; font-weight:700; color:var(--accent); }
+        .stat-mini-label { font-size:9px; color:var(--text2); margin-top:2px; }
+        
+        .btn { width:100%; padding:14px; border:none; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:12px; }
+        .btn-primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; }
+        .btn-pro { background:linear-gradient(135deg,var(--pro),#e67e22); color:#fff; }
+        .btn-secondary { background:var(--card); color:#fff; border:1px solid var(--border); }
+        .btn-success { background:var(--success); color:#fff; }
+        .btn-danger { background:var(--danger); color:#fff; }
+        .btn:disabled { opacity:0.6; }
+        .btn:active { transform:scale(0.98); }
+        .btn-sm { padding:10px 16px; font-size:12px; width:auto; }
+        
+        .section { margin-bottom:16px; }
+        .section-title { font-size:14px; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+        .badge { background:var(--accent); padding:2px 8px; border-radius:10px; font-size:10px; }
+        .badge-pro { background:var(--pro); }
+        
+        .order-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:8px; position:relative; }
+        .order-card.hot::after { content:'🔥'; position:absolute; top:8px; right:8px; }
+        .order-header { display:flex; gap:10px; margin-bottom:8px; }
+        .order-source { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:600; flex-shrink:0; }
+        .order-source.hh { background:#d63031; }
+        .order-source.kwork { background:#00b894; }
+        .order-source.fl { background:#0984e3; }
+        .order-source.freelance { background:#6c5ce7; }
+        .order-info { flex:1; min-width:0; }
+        .order-title { font-size:13px; font-weight:500; line-height:1.3; margin-bottom:4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+        .order-meta { display:flex; gap:8px; font-size:10px; color:var(--text2); flex-wrap:wrap; }
+        .order-actions { display:flex; gap:6px; margin-top:8px; }
+        .order-btn { flex:1; padding:8px; border:none; border-radius:8px; font-size:11px; font-weight:600; cursor:pointer; }
+        .order-btn.primary { background:var(--accent); color:#fff; }
+        .order-btn.secondary { background:var(--card); color:#fff; border:1px solid var(--border); }
+        
+        .scam-indicator { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px; font-size:11px; margin:8px 0; }
+        .scam-indicator.safe { background:rgba(0,210,106,0.15); color:var(--success); }
+        .scam-indicator.warning { background:rgba(255,193,7,0.15); color:var(--warning); }
+        .scam-indicator.danger { background:rgba(255,71,87,0.15); color:var(--danger); }
+        
+        .profile-header { text-align:center; padding:16px 0; }
+        .avatar { width:70px; height:70px; border-radius:50%; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:28px; margin:0 auto 10px; }
+        .profile-name { font-size:18px; font-weight:600; }
+        .profile-sub { font-size:12px; color:var(--text2); margin-top:2px; }
+        
+        .level-card { background:linear-gradient(135deg,var(--accent),var(--accent2)); border-radius:14px; padding:14px; margin:16px 0; }
+        .level-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+        .level-name { font-size:14px; font-weight:600; display:flex; align-items:center; gap:6px; }
+        .level-xp { font-size:12px; opacity:0.9; }
+        .level-bar { height:6px; background:rgba(255,255,255,0.2); border-radius:3px; overflow:hidden; }
+        .level-fill { height:100%; background:#fff; border-radius:3px; transition:width 0.3s; }
+        
+        .achievements-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+        .achievement { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; text-align:center; opacity:0.4; }
+        .achievement.unlocked { opacity:1; border-color:var(--accent); }
+        .achievement-icon { font-size:24px; margin-bottom:4px; }
+        .achievement-name { font-size:9px; color:var(--text2); }
+        
+        .deal-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:8px; }
+        .deal-header { display:flex; justify-content:space-between; align-items:start; margin-bottom:6px; }
+        .deal-title { font-size:13px; font-weight:500; }
+        .deal-amount { font-size:14px; font-weight:700; color:var(--success); }
+        .deal-meta { font-size:11px; color:var(--text2); }
+        .deal-status { display:inline-block; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:600; }
+        .deal-status.lead { background:rgba(108,92,231,0.2); color:var(--accent); }
+        .deal-status.in_progress { background:rgba(255,193,7,0.2); color:var(--warning); }
+        .deal-status.completed { background:rgba(0,210,106,0.2); color:var(--success); }
+        
+        .setting-item { background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; }
+        .setting-info { display:flex; align-items:center; gap:10px; }
+        .setting-icon { font-size:18px; }
+        .setting-text h4 { font-size:13px; font-weight:500; }
+        .setting-text p { font-size:10px; color:var(--text2); }
+        
+        .toggle { position:relative; width:44px; height:24px; }
+        .toggle input { opacity:0; width:0; height:0; }
+        .toggle-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:var(--card); border:1px solid var(--border); transition:0.3s; border-radius:24px; }
+        .toggle-slider::before { position:absolute; content:""; height:18px; width:18px; left:2px; bottom:2px; background:#fff; transition:0.3s; border-radius:50%; }
+        .toggle input:checked+.toggle-slider { background:var(--accent); border-color:var(--accent); }
+        .toggle input:checked+.toggle-slider::before { transform:translateX(20px); }
+        
+        .sub-card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; margin-bottom:10px; }
+        .sub-card.recommended { border-color:var(--pro); }
+        .sub-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+        .sub-name { font-size:16px; font-weight:700; }
+        .sub-price { font-size:20px; font-weight:700; }
+        .sub-price span { font-size:12px; font-weight:400; color:var(--text2); }
+        .sub-features { font-size:11px; color:var(--text2); }
+        .sub-features li { margin-bottom:4px; list-style:none; }
+        
+        .analytics-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:10px; }
+        .analytics-title { font-size:12px; color:var(--text2); margin-bottom:6px; }
+        .analytics-value { font-size:24px; font-weight:700; }
+        .analytics-trend { font-size:11px; margin-top:4px; }
+        .analytics-trend.up { color:var(--success); }
+        .analytics-trend.down { color:var(--danger); }
+        
+        .empty { text-align:center; padding:30px; }
+        .empty-icon { font-size:40px; margin-bottom:10px; }
+        .empty-text { font-size:13px; color:var(--text2); }
+        
+        .loading { text-align:center; padding:30px; }
+        .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+        
+        .toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%) translateY(100px); background:var(--success); color:#fff; padding:10px 20px; border-radius:10px; font-size:13px; opacity:0; transition:all 0.3s; z-index:1000; }
+        .toast.error { background:var(--danger); }
+        .toast.show { transform:translateX(-50%) translateY(0); opacity:1; }
+        
+        .modal { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.85); display:none; align-items:flex-end; justify-content:center; z-index:2000; }
+        .modal.show { display:flex; }
+        .modal-content { background:var(--bg2); border-radius:20px 20px 0 0; padding:20px; width:100%; max-height:85vh; overflow-y:auto; animation:slideUp 0.3s; }
+        @keyframes slideUp { from { transform:translateY(100%); } to { transform:translateY(0); } }
+        .modal-handle { width:40px; height:4px; background:var(--border); border-radius:2px; margin:0 auto 16px; }
+        .modal-title { font-size:18px; font-weight:600; margin-bottom:16px; }
+        .modal-text { font-size:14px; line-height:1.5; white-space:pre-wrap; background:var(--card); padding:12px; border-radius:10px; margin-bottom:16px; }
+        
+        .input { width:100%; padding:12px 14px; background:var(--card); border:1px solid var(--border); border-radius:10px; color:var(--text); font-size:14px; margin-bottom:10px; }
+        .input:focus { outline:none; border-color:var(--accent); }
+        .input::placeholder { color:var(--text2); }
+        
+        .categories-grid { display:flex; flex-wrap:wrap; gap:8px; }
+        .category-chip { padding:8px 14px; background:var(--card); border:1px solid var(--border); border-radius:20px; font-size:12px; cursor:pointer; }
+        .category-chip.active { background:var(--accent); border-color:var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <span class="logo">📡</span>
+            <span class="title">Freelance Radar</span>
+        </div>
+        <div style="display:flex;gap:6px;">
+            <span class="level-badge" id="headerLevel">🌱 Ур.1</span>
+            <span class="pro-badge" id="proBadge" style="display:none;">PRO</span>
+        </div>
+    </div>
+    
+    <div class="tabs">
+        <div class="tab active" onclick="showPage('orders')"><span class="tab-icon">📋</span>Заказы</div>
+        <div class="tab" onclick="showPage('deals')"><span class="tab-icon">💼</span>CRM</div>
+        <div class="tab" onclick="showPage('analytics')"><span class="tab-icon">📊</span>Аналитика</div>
+        <div class="tab" onclick="showPage('profile')"><span class="tab-icon">👤</span>Профиль</div>
+    </div>
+    
+    <!-- ORDERS PAGE -->
+    <div class="page active" id="page-orders">
+        <div class="stats-row">
+            <div class="stat-mini"><div class="stat-mini-value" id="statOrders">—</div><div class="stat-mini-label">Заказов</div></div>
+            <div class="stat-mini"><div class="stat-mini-value" id="statAI">—</div><div class="stat-mini-label">AI осталось</div></div>
+            <div class="stat-mini"><div class="stat-mini-value" id="statStreak">—</div><div class="stat-mini-label">🔥 Streak</div></div>
+        </div>
+        
+        <button class="btn btn-primary" id="turboBtn" onclick="turboParse()">
+            <span id="turboIcon">⚡</span><span id="turboText">НАЙТИ ЗАКАЗЫ</span>
+        </button>
+        
+        <div class="section-title"><span>📋 Заказы</span><span class="badge" id="ordersCount">0</span></div>
+        <div id="ordersList"><div class="loading"><div class="spinner"></div></div></div>
+    </div>
+    
+    <!-- DEALS PAGE (CRM) -->
+    <div class="page" id="page-deals">
+        <div class="stats-row">
+            <div class="stat-mini"><div class="stat-mini-value" id="dealActive">0</div><div class="stat-mini-label">Активных</div></div>
+            <div class="stat-mini"><div class="stat-mini-value" id="dealDone">0</div><div class="stat-mini-label">Завершено</div></div>
+            <div class="stat-mini"><div class="stat-mini-value" id="dealTotal">0₽</div><div class="stat-mini-label">Заработано</div></div>
+        </div>
+        
+        <button class="btn btn-success" onclick="showAddDealModal()">➕ Добавить сделку</button>
+        
+        <div class="section-title">💼 Мои сделки</div>
+        <div id="dealsList"><div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Нет сделок</div></div></div>
+    </div>
+    
+    <!-- ANALYTICS PAGE -->
+    <div class="page" id="page-analytics">
+        <div class="section-title">📊 Рынок за неделю</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">
+            <div class="analytics-card">
+                <div class="analytics-title">Заказов</div>
+                <div class="analytics-value" id="marketOrders">—</div>
+            </div>
+            <div class="analytics-card">
+                <div class="analytics-title">Средний бюджет</div>
+                <div class="analytics-value" id="marketBudget">—</div>
+            </div>
+        </div>
+        
+        <div class="section-title">💰 Твой заработок</div>
+        <div class="analytics-card">
+            <div class="analytics-title">За месяц</div>
+            <div class="analytics-value" id="userMonthly">0 ₽</div>
+        </div>
+        <div class="analytics-card">
+            <div class="analytics-title">Всего</div>
+            <div class="analytics-value" id="userTotal">0 ₽</div>
+        </div>
+        
+        <div class="section-title">🏆 Уровень и достижения</div>
+        <div class="level-card" id="levelCard"></div>
+        <div class="achievements-grid" id="achievementsGrid"></div>
+    </div>
+    
+    <!-- PROFILE PAGE -->
+    <div class="page" id="page-profile">
+        <div class="profile-header">
+            <div class="avatar" id="userAvatar">👤</div>
+            <div class="profile-name" id="userName">Загрузка...</div>
+            <div class="profile-sub" id="userSub">Бесплатный аккаунт</div>
+        </div>
+        
+        <div id="subBanner"></div>
+        
+        <div class="section-title">⚙️ Настройки</div>
+        
+        <div class="setting-item">
+            <div class="setting-info"><div class="setting-icon">🦁</div><div class="setting-text"><h4>Режим Хищник</h4><p>Мгновенные пуши для заказов 50K+</p></div></div>
+            <label class="toggle"><input type="checkbox" id="predatorToggle" onchange="saveSetting('predator_mode',this.checked)"><span class="toggle-slider"></span></label>
+        </div>
+        
+        <div class="setting-item">
+            <div class="setting-info"><div class="setting-icon">🔔</div><div class="setting-text"><h4>Уведомления</h4><p>Получать новые заказы</p></div></div>
+            <label class="toggle"><input type="checkbox" id="notifyToggle" checked onchange="saveSetting('is_active',this.checked)"><span class="toggle-slider"></span></label>
+        </div>
+        
+        <div class="section-title" style="margin-top:16px;">🎯 Категории</div>
+        <div class="categories-grid" id="categoriesGrid"></div>
+        <button class="btn btn-secondary" style="margin-top:12px;" onclick="saveCategories()">💾 Сохранить категории</button>
+        
+        <div class="section-title" style="margin-top:16px;">💳 Подписка</div>
+        <div id="subscriptionCards"></div>
+    </div>
+    
+    <div class="toast" id="toast"></div>
+    
+    <!-- Response Modal -->
+    <div class="modal" id="modal" onclick="closeModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-handle"></div>
+            <div class="modal-title" id="modalTitle">✨ AI-отклик</div>
+            <div class="modal-text" id="modalText">Загрузка...</div>
+            <button class="btn btn-success" id="modalBtn" onclick="copyText()">📋 Скопировать</button>
+        </div>
+    </div>
+    
+    <!-- Scam Modal -->
+    <div class="modal" id="scamModal" onclick="closeScamModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-handle"></div>
+            <div class="modal-title">🕵️ Проверка безопасности</div>
+            <div id="scamResult"></div>
+            <button class="btn btn-secondary" onclick="closeScamModal()">Закрыть</button>
+        </div>
+    </div>
+    
+    <!-- Price Modal -->
+    <div class="modal" id="priceModal" onclick="closePriceModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-handle"></div>
+            <div class="modal-title">💰 Рекомендуемая цена</div>
+            <div id="priceResult"></div>
+            <button class="btn btn-secondary" onclick="closePriceModal()">Закрыть</button>
+        </div>
+    </div>
+    
+    <!-- Add Deal Modal -->
+    <div class="modal" id="dealModal" onclick="closeDealModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-handle"></div>
+            <div class="modal-title">➕ Новая сделка</div>
+            <input class="input" id="dealTitle" placeholder="Название проекта">
+            <input class="input" id="dealClient" placeholder="Имя клиента">
+            <input class="input" id="dealAmount" type="number" placeholder="Сумма (₽)">
+            <button class="btn btn-success" onclick="createDeal()">Добавить</button>
+        </div>
+    </div>
+    
+    <script>
+        const API = '{{API_BASE}}';
+        const tg = window.Telegram.WebApp;
+        
+        let user = null;
+        let orders = [];
+        let selectedCategories = [];
+        
+        const CATEGORIES = [
+            {id:'python',name:'🐍 Python'},{id:'design',name:'🎨 Дизайн'},
+            {id:'copywriting',name:'✍️ Тексты'},{id:'marketing',name:'📈 Маркетинг'}
+        ];
+        
+        tg.ready();
+        tg.expand();
+        
+        document.addEventListener('DOMContentLoaded',async()=>{
+            await loadUser();
+            await loadOrders();
+            await loadStats();
+            await loadAchievements();
+            renderCategories();
+            renderSubscriptions();
+            haptic('light');
+        });
+        
+        function haptic(t){if(tg.HapticFeedback){if(t==='success')tg.HapticFeedback.notificationOccurred('success');else if(t==='error')tg.HapticFeedback.notificationOccurred('error');else tg.HapticFeedback.impactOccurred(t);}}
+        
+        function showPage(name){
+            document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+            document.getElementById('page-'+name).classList.add('active');
+            event.currentTarget.classList.add('active');
+            haptic('light');
+            if(name==='deals')loadDeals();
+            if(name==='analytics')loadStats();
+        }
+        
+        async function loadUser(){
+            try{
+                const r=await fetch(API+'/api/user',{headers:{'X-Telegram-Init-Data':tg.initData}});
+                user=await r.json();
+                
+                document.getElementById('userName').textContent=user.full_name||'Пользователь';
+                document.getElementById('headerLevel').innerHTML=user.level?.icon+' Ур.'+user.level?.level;
+                
+                if(user.is_pro){
+                    document.getElementById('proBadge').style.display='block';
+                    document.getElementById('userSub').textContent='PRO подписка';
+                }else if(user.has_subscription){
+                    document.getElementById('userSub').textContent='Базовая ('+user.subscription_days+' дн.)';
+                }
+                
+                document.getElementById('statAI').textContent=user.ai_responses_left===-1?'∞':user.ai_responses_left;
+                document.getElementById('statStreak').textContent=user.streak_days||0;
+                
+                document.getElementById('predatorToggle').checked=user.predator_mode||false;
+                selectedCategories=user.categories||[];
+                
+            }catch(e){console.error(e);}
+        }
+        
+        async function loadOrders(){
+            const list=document.getElementById('ordersList');
+            list.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+            try{
+                const r=await fetch(API+'/api/orders');
+                orders=await r.json();
+                document.getElementById('ordersCount').textContent=orders.length;
+                document.getElementById('statOrders').textContent=orders.length;
+                if(!orders.length){list.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">Нет заказов</div></div>';return;}
+                list.innerHTML=orders.map(o=>createOrderCard(o)).join('');
+            }catch(e){list.innerHTML='<div class="empty">Ошибка загрузки</div>';}
+        }
+        
+        function createOrderCard(o){
+            const srcMap={hh:'🔴',kwork:'🟢','fl.ru':'🔵','freelance.ru':'🟣'};
+            const srcClass=o.source.replace('.','').replace('_','');
+            const scamClass=o.scam_score>=60?'danger':o.scam_score>=30?'warning':'safe';
+            const scamText=o.scam_score>=60?'Высокий риск':o.scam_score>=30?'Средний риск':'Безопасно';
+            
+            return `<div class="order-card ${o.hot?'hot':''}">
+                <div class="order-header">
+                    <div class="order-source ${srcClass}">${srcMap[o.source]||'📋'}</div>
+                    <div class="order-info">
+                        <div class="order-title">${esc(o.title)}</div>
+                        <div class="order-meta"><span>💰${o.budget}</span><span>⏰${o.time_ago}</span><span>${o.source}</span></div>
+                    </div>
+                </div>
+                <div class="scam-indicator ${scamClass}" onclick="checkScam(${o.id})">
+                    <span>${scamClass==='safe'?'✅':scamClass==='warning'?'⚠️':'🔴'}</span>
+                    <span>${scamText}</span>
+                    <span style="margin-left:auto;font-size:10px;">Подробнее →</span>
+                </div>
+                <div class="order-actions">
+                    <button class="order-btn primary" onclick="generateResponse(${o.id})">✨ Отклик</button>
+                    <button class="order-btn secondary" onclick="calcPrice(${o.id})">💰 Цена</button>
+                    <button class="order-btn secondary" onclick="openUrl('${esc(o.url)}')">🔗</button>
+                </div>
+            </div>`;
+        }
+        
+        function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+        
+        async function turboParse(){
+            const btn=document.getElementById('turboBtn');
+            btn.disabled=true;
+            document.getElementById('turboText').textContent='ИЩЕМ...';
+            haptic('heavy');
+            try{
+                const r=await fetch(API+'/api/turbo-parse',{method:'POST'});
+                const d=await r.json();
+                toast('✅ Найдено '+d.new_orders+' заказов!');
+                haptic('success');
+                await loadOrders();
+            }catch(e){toast('Ошибка',true);haptic('error');}
+            document.getElementById('turboText').textContent='НАЙТИ ЗАКАЗЫ';
+            btn.disabled=false;
+        }
+        
+        async function generateResponse(id){
+            haptic('medium');
+            document.getElementById('modal').classList.add('show');
+            document.getElementById('modalText').textContent='Генерирую отклик...';
+            try{
+                const r=await fetch(API+'/api/generate-response',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+                const d=await r.json();
+                if(d.error==='limit_reached'){
+                    document.getElementById('modalTitle').textContent='⚠️ Лимит исчерпан';
+                    document.getElementById('modalText').textContent=d.message+'\\n\\nОформи PRO для безлимита!';
+                    document.getElementById('modalBtn').textContent='💎 Оформить PRO';
+                    document.getElementById('modalBtn').onclick=()=>{closeModal();showPage('profile');};
+                }else{
+                    document.getElementById('modalText').textContent=d.response;
+                    if(d.xp_earned)toast('+'+d.xp_earned+' XP');
+                }
+                haptic('success');
+            }catch(e){document.getElementById('modalText').textContent='Ошибка';}
+        }
+        
+        async function checkScam(id){
+            if(!user?.is_pro){toast('Только для PRO',true);return;}
+            haptic('medium');
+            document.getElementById('scamModal').classList.add('show');
+            document.getElementById('scamResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
+            try{
+                const r=await fetch(API+'/api/scam-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+                const d=await r.json();
+                document.getElementById('scamResult').innerHTML=`
+                    <div class="scam-indicator ${d.risk_level}" style="justify-content:center;font-size:14px;">
+                        ${d.risk_emoji} ${d.risk_text} (${d.risk_score}%)
+                    </div>
+                    <p style="margin:12px 0;font-size:13px;">${d.recommendation}</p>
+                    ${d.warnings.length?'<p style="font-size:12px;color:var(--danger);">⚠️ '+d.warnings.join('<br>⚠️ ')+'</p>':''}
+                    ${d.green_signs.length?'<p style="font-size:12px;color:var(--success);margin-top:8px;">✅ '+d.green_signs.join('<br>✅ ')+'</p>':''}
+                `;
+            }catch(e){document.getElementById('scamResult').textContent='Ошибка';}
+        }
+        
+        async function calcPrice(id){
+            if(!user?.is_pro){toast('Только для PRO',true);return;}
+            haptic('medium');
+            document.getElementById('priceModal').classList.add('show');
+            document.getElementById('priceResult').innerHTML='<div class="loading"><div class="spinner"></div></div>';
+            try{
+                const r=await fetch(API+'/api/price-calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:id,initData:tg.initData})});
+                const d=await r.json();
+                document.getElementById('priceResult').innerHTML=`
+                    <div class="analytics-card"><div class="analytics-title">Рекомендуемая цена</div><div class="analytics-value">${d.sweet_spot}</div></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0;">
+                        <div class="analytics-card"><div class="analytics-title">Минимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_min.toLocaleString()}₽</div></div>
+                        <div class="analytics-card"><div class="analytics-title">Максимум</div><div class="analytics-value" style="font-size:16px;">${d.recommended_max.toLocaleString()}₽</div></div>
+                    </div>
+                    <p style="font-size:12px;color:var(--text2);">Сложность: ${d.complexity_text}</p>
+                    <p style="font-size:13px;margin-top:10px;">${d.tip}</p>
+                `;
+            }catch(e){document.getElementById('priceResult').textContent='Ошибка';}
+        }
+        
+        async function loadStats(){
+            try{
+                const r=await fetch(API+'/api/stats',{headers:{'X-Telegram-Init-Data':tg.initData}});
+                const d=await r.json();
+                document.getElementById('marketOrders').textContent=d.market?.weekly_orders||0;
+                document.getElementById('marketBudget').textContent=(d.market?.avg_budget||0).toLocaleString()+'₽';
+                document.getElementById('userMonthly').textContent=(d.user?.monthly_earnings||0).toLocaleString()+' ₽';
+                document.getElementById('userTotal').textContent=(d.user?.total_earnings||0).toLocaleString()+' ₽';
+            }catch(e){}
+        }
+        
+        async function loadAchievements(){
+            try{
+                const r=await fetch(API+'/api/achievements',{headers:{'X-Telegram-Init-Data':tg.initData}});
+                const d=await r.json();
+                document.getElementById('levelCard').innerHTML=`
+                    <div class="level-header">
+                        <div class="level-name">${d.level.current.icon} ${d.level.current.name}</div>
+                        <div class="level-xp">${d.level.xp} XP</div>
+                    </div>
+                    <div class="level-bar"><div class="level-fill" style="width:${d.level.progress_percent}%"></div></div>
+                    ${d.level.next?`<div style="font-size:10px;margin-top:6px;opacity:0.8;">До ${d.level.next.name}: ${d.level.needed_xp-d.level.progress_xp} XP</div>`:''}
+                `;
+                document.getElementById('achievementsGrid').innerHTML=d.achievements.slice(0,8).map(a=>`
+                    <div class="achievement ${a.unlocked?'unlocked':''}">
+                        <div class="achievement-icon">${a.icon}</div>
+                        <div class="achievement-name">${a.name}</div>
+                    </div>
+                `).join('');
+            }catch(e){}
+        }
+        
+        async function loadDeals(){
+            try{
+                const r=await fetch(API+'/api/deals',{headers:{'X-Telegram-Init-Data':tg.initData}});
+                const deals=await r.json();
+                
+                const active=deals.filter(d=>d.status!=='completed'&&d.status!=='cancelled').length;
+                const done=deals.filter(d=>d.status==='completed').length;
+                const total=deals.filter(d=>d.status==='completed').reduce((s,d)=>s+d.amount,0);
+                
+                document.getElementById('dealActive').textContent=active;
+                document.getElementById('dealDone').textContent=done;
+                document.getElementById('dealTotal').textContent=total.toLocaleString()+'₽';
+                
+                if(!deals.length){document.getElementById('dealsList').innerHTML='<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">Добавь первую сделку</div></div>';return;}
+                
+                document.getElementById('dealsList').innerHTML=deals.map(d=>`
+                    <div class="deal-card">
+                        <div class="deal-header">
+                            <div><div class="deal-title">${esc(d.title)}</div><div class="deal-meta">${d.client_name||'—'}</div></div>
+                            <div class="deal-amount">${d.amount?.toLocaleString()||0}₽</div>
+                        </div>
+                        <span class="deal-status ${d.status}">${{lead:'Лид',negotiation:'Переговоры',in_progress:'В работе',review:'На проверке',completed:'Завершён',cancelled:'Отменён'}[d.status]||d.status}</span>
+                    </div>
+                `).join('');
+            }catch(e){}
+        }
+        
+        function showAddDealModal(){if(!user?.is_pro){toast('Только для PRO',true);return;}document.getElementById('dealModal').classList.add('show');}
+        function closeDealModal(e){if(!e||e.target.id==='dealModal')document.getElementById('dealModal').classList.remove('show');}
+        
+        async function createDeal(){
+            const title=document.getElementById('dealTitle').value;
+            const client=document.getElementById('dealClient').value;
+            const amount=parseInt(document.getElementById('dealAmount').value)||0;
+            if(!title){toast('Введи название',true);return;}
+            try{
+                await fetch(API+'/api/deals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,client_name:client,amount,initData:tg.initData})});
+                toast('✅ Сделка добавлена!');
+                closeDealModal();
+                loadDeals();
+            }catch(e){toast('Ошибка',true);}
+        }
+        
+        function renderCategories(){
+            document.getElementById('categoriesGrid').innerHTML=CATEGORIES.map(c=>`
+                <div class="category-chip ${selectedCategories.includes(c.id)?'active':''}" onclick="toggleCat('${c.id}',this)">${c.name}</div>
+            `).join('');
+        }
+        
+        function toggleCat(id,el){haptic('light');if(selectedCategories.includes(id)){selectedCategories=selectedCategories.filter(c=>c!==id);el.classList.remove('active');}else{selectedCategories.push(id);el.classList.add('active');}}
+        
+        async function saveCategories(){
+            try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({categories:selectedCategories,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}
+        }
+        
+        async function saveSetting(key,val){
+            try{await fetch(API+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val,initData:tg.initData})});toast('✅ Сохранено!');haptic('success');}catch(e){toast('Ошибка',true);}
+        }
+        
+        function renderSubscriptions(){
+            const basic=`<div class="sub-card"><div class="sub-header"><div class="sub-name">Базовая</div><div class="sub-price">690₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Мониторинг всех бирж</li><li>✅ 50 AI-откликов/мес</li><li>✅ Уведомления</li><li>❌ Детектор кидал</li><li>❌ CRM для сделок</li></ul><button class="btn btn-primary" onclick="subscribe('basic')">Попробовать 3 дня</button></div>`;
+            const pro=`<div class="sub-card recommended"><div class="sub-header"><div class="sub-name">PRO ⭐</div><div class="sub-price">1490₽<span>/мес</span></div></div><ul class="sub-features"><li>✅ Безлимит AI-откликов</li><li>✅ Детектор мошенников</li><li>✅ Калькулятор цен</li><li>✅ CRM для сделок</li><li>✅ Аналитика рынка</li><li>✅ Приоритетные пуши</li></ul><button class="btn btn-pro" onclick="subscribe('pro')">Оформить PRO</button></div>`;
+            document.getElementById('subscriptionCards').innerHTML=pro+basic;
+        }
+        
+        function subscribe(type){toast('Оплата через бота @FreelanceRadarBot');tg.close();}
+        
+        function copyText(){navigator.clipboard.writeText(document.getElementById('modalText').textContent).then(()=>{toast('📋 Скопировано!');haptic('success');closeModal();});}
+        function closeModal(e){if(!e||e.target.id==='modal'){document.getElementById('modal').classList.remove('show');document.getElementById('modalTitle').textContent='✨ AI-отклик';document.getElementById('modalBtn').textContent='📋 Скопировать';document.getElementById('modalBtn').onclick=copyText;}}
+        function closeScamModal(e){if(!e||e.target.id==='scamModal')document.getElementById('scamModal').classList.remove('show');}
+        function closePriceModal(e){if(!e||e.target.id==='priceModal')document.getElementById('priceModal').classList.remove('show');}
+        function openUrl(u){haptic('light');tg.openLink(u);}
+        function toast(m,err=false){const t=document.getElementById('toast');t.textContent=m;t.className='toast'+(err?' error':'');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
+    </script>
+</body>
+</html>'''
 
 
 if __name__ == "__main__":
